@@ -147,9 +147,25 @@ static pid_t XSTargetPid(id record) {
     return gLastPid;
 }
 
+// A record can make the app quit (⌘Q): the status request then fails because the process is going
+// away. Hardware synthesis completes regardless of what the app does with the events, so a target
+// that terminates within 2 s counts as a completed delivery.
+static void XSCompleteIfTerminated(pid_t pid, NSError *error, CFAbsoluteTime deadline, void (^completion)(NSError *)) {
+    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+    if (!app || app.isTerminated) {
+        XSInfo(@"target pid %d terminated while its events were delivered; delivery complete", pid);
+        completion(nil);
+        return;
+    }
+    if (CFAbsoluteTimeGetCurrent() > deadline) { completion(error); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), XSQueue(), ^{
+        XSCompleteIfTerminated(pid, error, deadline, completion);
+    });
+}
+
 static void XSPollDelivery(id daemon, pid_t pid, NSString *requestID, CFAbsoluteTime start, void (^completion)(NSError *)) {
     XSAgentRequest(daemon, pid, [@"status:" stringByAppendingString:requestID], ^(NSString *status, NSError *error) {
-        if (error) { completion(error); return; }
+        if (error) { XSCompleteIfTerminated(pid, error, CFAbsoluteTimeGetCurrent() + 2, completion); return; }
         if ([status hasPrefix:@"done"]) {
             NSArray *parts = [status componentsSeparatedByString:@":"];
             if (parts.count > 1) gModifierFlags = (NSUInteger)[parts[1] longLongValue];

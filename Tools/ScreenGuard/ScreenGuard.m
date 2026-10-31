@@ -19,6 +19,11 @@ static CGEventRef XGTap(CGEventTapProxy proxy, CGEventType type, CGEventRef even
         fprintf(gOut, "%.3f SYNTHETIC event type %d from pid %lld at %.0f,%.0f\n", [NSDate date].timeIntervalSince1970, type, pid, p.x, p.y);
     } else {
         gHardwareEvents++;
+        // Button and key events from the user are logged so they can be correlated with failures.
+        if (type == kCGEventLeftMouseDown || type == kCGEventRightMouseDown || type == kCGEventKeyDown) {
+            CGPoint p = CGEventGetLocation(event);
+            fprintf(gOut, "%.3f HARDWARE event type %d at %.0f,%.0f\n", [NSDate date].timeIntervalSince1970, type, p.x, p.y);
+        }
     }
     return event;
 }
