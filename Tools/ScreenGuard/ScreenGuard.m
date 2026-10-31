@@ -17,6 +17,19 @@ static CGEventRef XGTap(CGEventTapProxy proxy, CGEventType type, CGEventRef even
         gSyntheticEvents++;
         CGPoint p = CGEventGetLocation(event);
         fprintf(gOut, "%.3f SYNTHETIC event type %d from pid %lld at %.0f,%.0f\n", [NSDate date].timeIntervalSince1970, type, pid, p.x, p.y);
+        if (type == kCGEventScrollWheel) {
+            fprintf(gOut, "%.3f   scroll continuous=%lld phase=%lld momentum=%lld delta1=%lld delta2=%lld point1=%lld point2=%lld fixed1=%.3f fixed2=%.3f\n",
+                    [NSDate date].timeIntervalSince1970,
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventScrollPhase),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventMomentumPhase),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1),
+                    CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis2),
+                    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1),
+                    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2));
+        }
     } else {
         gHardwareEvents++;
         // Button and key events from the user are logged so they can be correlated with failures.
@@ -36,7 +49,7 @@ int main(int argc, char **argv) {
         gOut = out;
         CGEventMask mask = CGEventMaskBit(kCGEventMouseMoved) | CGEventMaskBit(kCGEventLeftMouseDown) | CGEventMaskBit(kCGEventLeftMouseUp)
             | CGEventMaskBit(kCGEventRightMouseDown) | CGEventMaskBit(kCGEventRightMouseUp) | CGEventMaskBit(kCGEventLeftMouseDragged)
-            | CGEventMaskBit(kCGEventScrollWheel) | CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged);
+            | CGEventMaskBit(kCGEventScrollWheel) | CGEventMaskBit(29) /* gesture */ | CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged);
         CFMachPortRef tap = CGEventTapCreate(kCGSessionEventTap, kCGTailAppendEventTap, kCGEventTapOptionListenOnly, mask, XGTap, NULL);
         if (tap) {
             CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(NULL, tap, 0);

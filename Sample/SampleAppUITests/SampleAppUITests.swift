@@ -101,4 +101,16 @@ final class SampleAppUITests: XCTestCase {
         XCTAssertEqual(status.title, "Not hovered")
         app.typeKey(.escape, modifierFlags: [])
     }
+
+    /// Delta scrolls reach a horizontal scroll view and move its content both ways.
+    @MainActor
+    func testHorizontalScroll() {
+        let scroller = app.descendants(matching: .any)["scroller"].firstMatch
+        XCTAssertTrue(scroller.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Scrolled: no"].exists)
+        scroller.scroll(byDeltaX: -400, deltaY: 0)
+        XCTAssertTrue(app.staticTexts["Scrolled: yes"].waitForExistence(timeout: 3), app.debugDescription)
+        scroller.scroll(byDeltaX: 800, deltaY: 0)
+        XCTAssertTrue(app.staticTexts["Scrolled: no"].waitForExistence(timeout: 3), app.debugDescription)
+    }
 }

@@ -31,6 +31,8 @@ final class SampleModel: ObservableObject {
         return ["focus"]
         #elseif REGRESSION_MENUHOVER
         return ["menuhover"]
+        #elseif REGRESSION_SCROLL
+        return ["scroll"]
         #else
         return []
         #endif
@@ -108,6 +110,7 @@ struct ContentView: View {
             MenuHoverTarget()
                 .frame(width: 200, height: 30)
                 .accessibilityIdentifier("menu-hover-target")
+            HorizontalScroller()
         }
         .padding(20)
         .frame(width: 420, alignment: .topLeading)
@@ -220,5 +223,28 @@ struct MenuHoverTarget: NSViewRepresentable {
         override func isAccessibilityElement() -> Bool { true }
         override func accessibilityRole() -> NSAccessibility.Role? { .group }
         override func accessibilityIdentifier() -> String { "hover-row" }
+    }
+}
+
+
+/// A horizontal scroll view whose offset is reported as text.
+struct HorizontalScroller: View {
+    @State private var offset: CGFloat = 0
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(0..<40, id: \.self) { index in
+                        Text("\(index)").frame(width: 40, height: 30).background(Color.secondary.opacity(0.2))
+                    }
+                }
+            }
+            .scrollDisabled(SampleModel.regressions.contains("scroll"))
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, new in offset = new }
+            .frame(width: 300, height: 40)
+            .accessibilityIdentifier("scroller")
+            Text("Scrolled: \(offset > 100 ? "yes" : "no")").accessibilityIdentifier("scroll-label")
+        }
     }
 }

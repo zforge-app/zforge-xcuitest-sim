@@ -448,6 +448,9 @@ static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSD
         if (traceOnly) {
             if (event && event.type != NSEventTypeAppKitDefined && event.type != NSEventTypeSystemDefined && event.type != NSEventTypeApplicationDefined && event.type != NSEventTypePeriodic) {
                 CGEventRef cg = event.CGEvent;
+                if (event.type == NSEventTypeScrollWheel) XAInfo(@"pointer-trace scroll dx=%.1f dy=%.1f precise=%d inverted=%d phase=%lu momentum=%lu loc=%@ win=%ld",
+                    event.scrollingDeltaX, event.scrollingDeltaY, event.hasPreciseScrollingDeltas, event.isDirectionInvertedFromDevice,
+                    (unsigned long)event.phase, (unsigned long)event.momentumPhase, NSStringFromPoint(event.locationInWindow), (long)event.windowNumber);
                 XAInfo(@"pointer-trace type=%lu evNum=%ld win=%ld pid=%lld state=%lld userData=%lld deq=%d mode=%@", (unsigned long)event.type,
                        (long)((event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp || event.type == NSEventTypeFlagsChanged) ? -1 : event.eventNumber), (long)event.windowNumber,
                        cg ? CGEventGetIntegerValueField(cg, kCGEventSourceUnixProcessID) : -1,
@@ -513,6 +516,35 @@ static void XAButton(NSUInteger button, BOOL down, NSInteger clickCount) {
     if (down) gButtons |= mask; else gButtons &= ~mask;
     if (button == 0 && !XAWindowAtPoint(gMouse) && XAMenuBarButton(button, down)) return;
     XAPostMouse(type, gMouse, MAX(clickCount, 1), down ? 1 : 0);
+}
+
+// Private CoreGraphics call: the window-relative location (top-left origin) that NSEvent uses as
+// -locationInWindow for events targeted at a window.
+extern void CGEventSetWindowLocation(CGEventRef event, CGPoint location);
+
+// Scroll events are built as CGEvents (pixel or line units) and marked with this process's pid: the
+// isolation filter drops pointer events from other sources.
+static void XAPostScroll(CGScrollEventUnit unit, int32_t vertical, int32_t horizontal) {
+    CGEventRef cg = CGEventCreateScrollWheelEvent(NULL, unit, 2, vertical, horizontal);
+    if (unit == kCGScrollEventUnitPixel) CGEventSetIntegerValueField(cg, kCGScrollWheelEventIsContinuous, 1);
+    NSWindow *window = XAWindowAtPoint(gMouse);
+    CGEventSetLocation(cg, CGPointMake(gMouse.x, XAPrimaryHeight() - gMouse.y));
+    CGEventSetIntegerValueField(cg, kCGMouseEventWindowUnderMousePointer, window.windowNumber);
+    CGEventSetIntegerValueField(cg, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, window.windowNumber);
+    // Field 51 is what +[NSEvent eventWithCGEvent:] reads as the window number (found empirically on
+    // macOS 27.0.1); without it the event has no window and AppKit does not route it to the view.
+    CGEventSetIntegerValueField(cg, (CGEventField)51, window.windowNumber);
+    if (window) {
+        NSPoint inWindow = [window convertPointFromScreen:gMouse];
+        CGEventSetWindowLocation(cg, CGPointMake(inWindow.x, window.frame.size.height - inWindow.y));
+    }
+    CGEventSetIntegerValueField(cg, kCGEventSourceUnixProcessID, getpid());
+    CGEventSetFlags(cg, (CGEventFlags)gFlags);
+    NSEvent *event = [NSEvent eventWithCGEvent:cg];
+    if (getenv("XCUISIM_TRACE_POINTER")) XAInfo(@"scroll post: gMouse=%@ window=%@ #%ld frame=%@ expected=%@ got=%@", NSStringFromPoint(gMouse), window.className, (long)window.windowNumber,
+        NSStringFromRect(window.frame), NSStringFromPoint([window convertPointFromScreen:gMouse]), NSStringFromPoint(event.locationInWindow));
+    XAPost(event);
+    CFRelease(cg);
 }
 
 #pragma mark - Keyboard
@@ -689,18 +721,23 @@ static NSArray *XAStepsForRecord(NSDictionary *record) {
                 case 5: case 7: {
                     double vx = [e[@"vx"] doubleValue], vy = [e[@"vy"] doubleValue];
                     NSInteger lines = [e[@"verticalLineScroll"] integerValue];
-                    XAAddStep(steps, offset, ^{
-                        if (type == 7 && !NSEqualPoints(gMouse, point)) XAMoveTo(point);
-                        CGEventRef cg = type == 7
-                            ? CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, (int32_t)lines)
-                            : CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitPixel, 2, (int32_t)vy, (int32_t)vx);
-                        NSWindow *window = XAWindowAtPoint(gMouse);
-                        CGEventSetLocation(cg, CGPointMake(gMouse.x, XAPrimaryHeight() - gMouse.y));
-                        CGEventSetIntegerValueField(cg, kCGMouseEventWindowUnderMousePointer, window.windowNumber);
-                        CGEventSetIntegerValueField(cg, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, window.windowNumber);
-                        XAPost([NSEvent eventWithCGEvent:cg]);
-                        CFRelease(cg);
-                    });
+                    if (type == 7) {
+                        XAAddStep(steps, offset, ^{
+                            if (!NSEqualPoints(gMouse, point)) XAMoveTo(point);
+                            XAPostScroll(kCGScrollEventUnitLine, (int32_t)lines, 0);
+                        });
+                        break;
+                    }
+                    // testmanagerd sends a delta scroll as continuous (trackpad-like) pixel events of
+                    // about 21 pt each, within ~15 ms and without phases (measured 2026-10-31).
+                    double length = MAX(fabs(vx), fabs(vy));
+                    NSInteger count = MAX(1, (NSInteger)lround(length / 21.0));
+                    int32_t sentX = 0, sentY = 0;
+                    for (NSInteger i = 1; i <= count; i++) {
+                        int32_t x = (int32_t)lround(vx * i / count) - sentX, y = (int32_t)lround(vy * i / count) - sentY;
+                        sentX += x; sentY += y;
+                        XAAddStep(steps, offset + duration * (i - 1) / MAX(count - 1, 1), ^{ XAPostScroll(kCGScrollEventUnitPixel, y, x); });
+                    }
                     break;
                 }
                 case 8: {
