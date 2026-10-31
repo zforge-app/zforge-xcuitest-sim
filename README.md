@@ -4,7 +4,29 @@ Runs existing macOS XCUITest suites without taking over the user's screen, and i
 
 XCUITest normally asks `testmanagerd` to synthesize real HID events through the window server, which moves the cursor, activates the app and steals focus. This tool intercepts that private event-synthesis path in the test runner and delivers the events inside the app under test (offscreen windows, simulated activation). Element queries keep using the real accessibility tree, so existing tests run unchanged.
 
-Status: feasibility spike. Nothing here is proven yet.
+Status: feasibility spike. See `Notes/feasibility-2026-10-29.md` for what was proven and what was not.
+
+## Layout
+
+- `Sources/RunnerShim/` — runner shim (`libXCUISimRunnerShim.dylib`).
+- `Sources/AppAgent/` — app agent (`libXCUISimAgent.dylib`).
+- `Tools/ScreenGuard/` — records frontmost-app changes, cursor movement, visible windows and synthetic events during a run (evidence that the screen was not touched).
+- `Sample/` — sample AppKit/SwiftUI app with unchanged XCUITests and compile-time regressions for negative controls.
+- `Scripts/` — build, prepare and run scripts.
+- `Notes/` — reverse-engineered interface notes per Xcode version and spike findings.
+
+Work products go to `$XCUISIM_WORK` (default `~/Library/Caches/dev.xcuitestsim`). Never build or load test products from `~/Documents`, `~/Desktop` or `~/Downloads`: the runner reading them makes macOS show a permission prompt.
+
+## Spike usage
+
+```sh
+XCUISIM_SIGN_IDENTITY="Apple Development" Scripts/build-tools.sh
+XCUISIM_TEAM=<team> Scripts/build-sample.sh                         # prints the xctestrun path
+Scripts/prepare-xctestrun.py <xctestrun> --identity "Apple Development"   # writes <name>-offscreen.xctestrun
+Scripts/run-offscreen.sh <name> <offscreen.xctestrun> <app>,<runner> [-only-testing:...]
+```
+
+`prepare-xctestrun.py` modifies the built app in place (adds a weak load command for the agent and re-signs it); use it on a test build copy only.
 
 ## Planned parts
 
