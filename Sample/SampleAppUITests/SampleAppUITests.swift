@@ -84,4 +84,21 @@ final class SampleAppUITests: XCTestCase {
         app.buttons["increment-button"].hover()
         XCTAssertTrue(app.staticTexts["Hover: outside"].waitForExistence(timeout: 3), app.debugDescription)
     }
+
+    /// Hover inside an open context menu reaches a custom item view (tracking areas in the menu window).
+    @MainActor
+    func testHoverInsideContextMenu() {
+        app.descendants(matching: .any)["menu-hover-target"].rightClick()
+        let status = app.menuItems["hover-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertEqual(status.title, "Not hovered")
+        let row = app.descendants(matching: .any)["hover-row"]
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).hover()
+        XCTAssertEqual(status.title, "Hovered left")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).hover()
+        XCTAssertEqual(status.title, "Hovered right")
+        status.hover()
+        XCTAssertEqual(status.title, "Not hovered")
+        app.typeKey(.escape, modifierFlags: [])
+    }
 }

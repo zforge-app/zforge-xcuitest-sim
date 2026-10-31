@@ -198,17 +198,21 @@ static void XACollectTrackingAreas(NSView *view, NSMutableArray *areas) {
     for (NSView *subview in view.subviews) XACollectTrackingAreas(subview, areas);
 }
 
+static NSInteger gMenuTrackingDepth; // > 0 while any NSMenu is tracking (context, pop-up, menu bar)
+
+// Emulates the window server's tracking-area events: entered/exited when the simulated cursor crosses
+// an area, and mouseMoved inside areas created with NSTrackingMouseMoved. Menus are included: their
+// windows are not in NSApp.windows, and views in menu items rely on these events for hover.
 static void XAUpdateTrackingAreas(void) {
     NSWindow *target = XAWindowAtPoint(gMouse);
-    for (NSWindow *window in NSApp.windows) {
-        if (!window.isVisible) continue;
+    for (NSWindow *window in XAWindowsFrontToBack()) {
         NSView *root = window.contentView.superview ?: window.contentView;
         NSMutableArray *areas = [NSMutableArray array];
         if (root) XACollectTrackingAreas(root, areas);
         for (NSArray *pair in areas) {
             NSTrackingArea *area = pair[0];
             NSView *view = pair[1];
-            if (!(area.options & NSTrackingMouseEnteredAndExited)) continue;
+            if (!(area.options & (NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved))) continue;
             // visibleRect can extend past the bounds when superviews do not clip (macOS 14+).
             NSRect rect = (area.options & NSTrackingInVisibleRect) ? NSIntersectionRect(view.visibleRect, view.bounds) : area.rect;
             NSRect screenRect = [window convertRectToScreen:[view convertRect:rect toView:nil]];
@@ -217,15 +221,24 @@ static void XAUpdateTrackingAreas(void) {
             // state belongs to the view and owner, not to one NSTrackingArea instance.
             NSString *key = [NSString stringWithFormat:@"%p-%p", view, area.owner];
             BOOL wasInside = [gInsideAreas containsObject:key];
-            if (getenv("XCUISIM_TRACE_TRACKING")) XAInfo(@"tracking %@ owner %@ rect %@ (bounds %@ visible %@ area %@) inside=%d was=%d", key, [area.owner class], NSStringFromRect(screenRect), NSStringFromRect(view.bounds), NSStringFromRect(view.visibleRect), NSStringFromRect(area.rect), inside, wasInside);
+            if (getenv("XCUISIM_TRACE_TRACKING")) XAInfo(@"tracking %@ owner %@ rect %@ inside=%d was=%d", key, [area.owner class], NSStringFromRect(screenRect), inside, wasInside);
+            NSPoint location = [window convertPointFromScreen:gMouse];
+            if (inside && wasInside) {
+                if (area.options & NSTrackingMouseMoved) {
+                    [area.owner mouseMoved:[NSEvent mouseEventWithType:NSEventTypeMouseMoved location:location modifierFlags:gFlags
+                                                             timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber
+                                                               context:nil eventNumber:++gEventNumber clickCount:0 pressure:0]];
+                }
+                continue;
+            }
             if (inside == wasInside) continue;
-            NSEventType type = inside ? NSEventTypeMouseEntered : NSEventTypeMouseExited;
-            NSEvent *event = [NSEvent enterExitEventWithType:type location:[window convertPointFromScreen:gMouse]
+            if (inside) [gInsideAreas addObject:key]; else [gInsideAreas removeObject:key];
+            if (!(area.options & NSTrackingMouseEnteredAndExited)) continue;
+            NSEvent *event = [NSEvent enterExitEventWithType:inside ? NSEventTypeMouseEntered : NSEventTypeMouseExited location:location
                                                modifierFlags:gFlags timestamp:NSProcessInfo.processInfo.systemUptime
                                                 windowNumber:window.windowNumber context:nil eventNumber:++gEventNumber
                                               trackingNumber:(NSInteger)area userData:(__bridge void *)area.userInfo];
-            if (inside) { [gInsideAreas addObject:key]; [area.owner mouseEntered:event]; }
-            else { [gInsideAreas removeObject:key]; [area.owner mouseExited:event]; }
+            if (inside) [area.owner mouseEntered:event]; else [area.owner mouseExited:event];
         }
     }
 }
@@ -371,6 +384,86 @@ static BOOL XAMenuBarArrow(NSString *key, NSEventModifierFlags modifiers) {
     return YES;
 }
 
+#pragma mark - Isolation from the user's real pointer
+
+static NSUInteger gDroppedRealEvents;
+
+// Pointer events created in this process (by the agent or internally by AppKit, e.g. when a menu
+// starts tracking) carry this process's pid; events from the window server (the user's real cursor,
+// including tracking-area entered/exited events for the invisible windows) carry pid 0.
+static BOOL XAIsRealPointerEvent(NSEvent *event) {
+    switch (event.type) {
+        case NSEventTypeLeftMouseDown: case NSEventTypeLeftMouseUp: case NSEventTypeRightMouseDown:
+        case NSEventTypeRightMouseUp: case NSEventTypeOtherMouseDown: case NSEventTypeOtherMouseUp:
+        case NSEventTypeMouseMoved: case NSEventTypeLeftMouseDragged: case NSEventTypeRightMouseDragged:
+        case NSEventTypeOtherMouseDragged: case NSEventTypeScrollWheel:
+        case NSEventTypeMouseEntered: case NSEventTypeMouseExited: case NSEventTypeCursorUpdate:
+        case NSEventTypeMagnify: case NSEventTypeSwipe: case NSEventTypeRotate: case NSEventTypeBeginGesture:
+        case NSEventTypeEndGesture: case NSEventTypeSmartMagnify: case NSEventTypePressure: case NSEventTypeDirectTouch: {
+            CGEventRef cg = event.CGEvent;
+            return cg && CGEventGetIntegerValueField(cg, kCGEventSourceUnixProcessID) != getpid();
+        }
+        default:
+            return NO;
+    }
+}
+
+// AppKit's tracking-area manager also updates areas from the location of each dequeued event (a
+// dequeuing observer that runs before -nextEventMatchingMask: returns), and synthesizes
+// entered/exited events itself, e.g. for view-based menu items. Updates whose location is not the
+// simulated cursor come from the user's real pointer and are ignored.
+static IMP gUpdateMenuAreas, gUpdateAreas;
+static BOOL XAIsSimulatedLocation(id manager, CGPoint location) {
+    NSWindow *window = [manager valueForKey:@"window"];
+    if (!window) return YES;
+    NSPoint simulated = [window convertPointFromScreen:gMouse];
+    return fabs(simulated.x - location.x) <= 1 && fabs(simulated.y - location.y) <= 1;
+}
+static void XAUpdateMenuAreas(id self, SEL _cmd, CGPoint location, NSUInteger flags) {
+    if (!XAIsSimulatedLocation(self, location)) { XAInfo(@"ignored a menu tracking-area update from the real pointer"); return; }
+    ((void (*)(id, SEL, CGPoint, NSUInteger))gUpdateMenuAreas)(self, _cmd, location, flags);
+}
+static void XAUpdateAreas(id self, SEL _cmd, CGPoint location, NSUInteger flags) {
+    if (!XAIsSimulatedLocation(self, location)) return;
+    ((void (*)(id, SEL, CGPoint, NSUInteger))gUpdateAreas)(self, _cmd, location, flags);
+}
+
+// When the user's real cursor enters an (invisible) window's structural region, AppKit's display
+// cycle calls -setCursorForMouseLocation: with the real location, which sets the cursor and
+// synthesizes entered/exited events for the areas under it. In the simulation the hardware cursor
+// must not matter: the call is dropped (hover comes from the simulated cursor only).
+static IMP gSetCursorForMouseLocation;
+static void XASetCursorForMouseLocation(id self, SEL _cmd, CGPoint location) {
+    static BOOL logged;
+    if (!logged) { logged = YES; XAInfo(@"ignored real-cursor tracking update at %@", NSStringFromPoint(location)); }
+}
+
+// Every event loop (the main loop, nested tracking loops, menu tracking) dequeues through here.
+static IMP gNextEvent;
+static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSDate *until, NSRunLoopMode mode, BOOL dequeue) {
+    static int traceOnly = -1;
+    if (traceOnly < 0) traceOnly = getenv("XCUISIM_TRACE_POINTER") != NULL;
+    for (;;) {
+        NSEvent *event = ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, mask, until, mode, dequeue);
+        if (traceOnly) {
+            if (event && event.type != NSEventTypeAppKitDefined && event.type != NSEventTypeSystemDefined && event.type != NSEventTypeApplicationDefined && event.type != NSEventTypePeriodic) {
+                CGEventRef cg = event.CGEvent;
+                XAInfo(@"pointer-trace type=%lu evNum=%ld win=%ld pid=%lld state=%lld userData=%lld deq=%d mode=%@", (unsigned long)event.type,
+                       (long)((event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp || event.type == NSEventTypeFlagsChanged) ? -1 : event.eventNumber), (long)event.windowNumber,
+                       cg ? CGEventGetIntegerValueField(cg, kCGEventSourceUnixProcessID) : -1,
+                       cg ? CGEventGetIntegerValueField(cg, kCGEventSourceStateID) : -1,
+                       cg ? CGEventGetIntegerValueField(cg, kCGEventSourceUserData) : -1, dequeue, mode);
+            }
+            return event;
+        }
+        if (!event || !XAIsRealPointerEvent(event)) return event;
+        if (!dequeue) {
+            ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, NSEventMaskFromType(event.type), [NSDate distantPast], mode, YES);
+        }
+        if (++gDroppedRealEvents % 50 == 1) XAInfo(@"dropped real pointer event %@ (%lu so far)", event, (unsigned long)gDroppedRealEvents);
+    }
+}
+
 #pragma mark - Event construction
 
 static void XAPost(NSEvent *event) {
@@ -406,7 +499,9 @@ static void XAMoveTo(NSPoint point) {
     gMouse = point;
     XAMenuBarHover(point);
     XAPostMouse(XAMoveType(), point, 0, gButtons ? 1 : 0);
-    XAPostTrackingMarker();
+    // A menu's tracking loop consumes queued events without dispatching application-defined
+    // markers, so tracking areas are updated right away while a menu is open.
+    if (gMenuTrackingDepth > 0) XAUpdateTrackingAreas(); else XAPostTrackingMarker();
 }
 
 static void XAButton(NSUInteger button, BOOL down, NSInteger clickCount) {
@@ -581,7 +676,9 @@ static NSArray *XAStepsForRecord(NSDictionary *record) {
                 case 4: {
                     BOOL hasDestination = duration > 0 && !isnan(destination.x);
                     if (!hasDestination) { XAAddStep(steps, offset, ^{ XAMoveTo(point); }); break; }
-                    NSInteger count = MAX(2, (NSInteger)(duration / 0.016));
+                    // testmanagerd emits about 24 points per 0.1 s move (~240 Hz, measured from real runs
+                    // 2026-10-31); where an area is entered depends on this sampling.
+                    NSInteger count = MAX(2, (NSInteger)lround(duration * 240));
                     for (NSInteger i = 0; i <= count; i++) {
                         double t = (double)i / count;
                         NSPoint p = NSMakePoint(point.x + (destination.x - point.x) * t, point.y + (destination.y - point.y) * t);
@@ -915,6 +1012,11 @@ static void XAInstall(void) {
     gAttributeValue = XASwizzle(app, @selector(accessibilityAttributeValue:), (IMP)XAAttributeValue);
     gSendEvent = XASwizzle(app, @selector(sendEvent:), (IMP)XASendEvent);
     gIsActive = XASwizzle(app, @selector(isActive), (IMP)XAIsActive);
+    gNextEvent = XASwizzle(app, @selector(nextEventMatchingMask:untilDate:inMode:dequeue:), (IMP)XANextEvent);
+    Class areaManager = NSClassFromString(@"_NSTrackingAreaAKManager");
+    gUpdateMenuAreas = XASwizzle(areaManager, NSSelectorFromString(@"_updateMenuActiveTrackingAreasForWindowLocation:modifierFlags:"), (IMP)XAUpdateMenuAreas);
+    gSetCursorForMouseLocation = XASwizzle(areaManager, NSSelectorFromString(@"setCursorForMouseLocation:"), (IMP)XASetCursorForMouseLocation);
+    gUpdateAreas = XASwizzle(areaManager, NSSelectorFromString(@"_updateActiveTrackingAreasForWindowLocation:modifierFlags:"), (IMP)XAUpdateAreas);
     gMenuItemAttributeValue = XASwizzle([NSMenuItem class], @selector(accessibilityAttributeValue:), (IMP)XAMenuItemAttributeValue);
     gActivateIgnoring = XASwizzle(app, @selector(activateIgnoringOtherApps:), (IMP)XAActivateIgnoring);
     gActivate = XASwizzle(app, @selector(activate), (IMP)XAActivate);
@@ -949,6 +1051,10 @@ __attribute__((constructor)) static void XCUISimAgentInit(void) {
     gKnownWindows = [NSHashTable weakObjectsHashTable];
     gMouse = NSMakePoint(-10000, -10000);
     XAInstall();
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
+                                                  usingBlock:^(NSNotification *note) { gMenuTrackingDepth++; }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
+                                                  usingBlock:^(NSNotification *note) { gMenuTrackingDepth = MAX(gMenuTrackingDepth - 1, 0); }];
     if ([env[@"XCUISIM_DIAG"] isEqualToString:@"1"]) XAInstallDiagnostics();
     // Offscreen apps are candidates for App Nap and timer throttling.
     gActivity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical

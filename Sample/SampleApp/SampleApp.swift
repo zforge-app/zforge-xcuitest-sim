@@ -29,6 +29,8 @@ final class SampleModel: ObservableObject {
         return ["hover"]
         #elseif REGRESSION_FOCUS
         return ["focus"]
+        #elseif REGRESSION_MENUHOVER
+        return ["menuhover"]
         #else
         return []
         #endif
@@ -103,6 +105,9 @@ struct ContentView: View {
                 .accessibilityIdentifier("modifier-target")
             Text("Modifier click: \(model.lastModifierClick)").accessibilityIdentifier("modifier-label")
             Text("Hover: \(model.hover)").accessibilityIdentifier("hover-label")
+            MenuHoverTarget()
+                .frame(width: 200, height: 30)
+                .accessibilityIdentifier("menu-hover-target")
         }
         .padding(20)
         .frame(width: 420, alignment: .topLeading)
@@ -154,5 +159,66 @@ struct ModifierClickView: NSViewRepresentable {
 
         override func isAccessibilityElement() -> Bool { true }
         override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    }
+}
+
+
+/// An AppKit view whose context menu holds a custom view item; hovering the view (tracking area with
+/// entered/moved events) retitles another item, as menus with inline controls commonly do.
+struct MenuHoverTarget: NSViewRepresentable {
+    func makeNSView(context: Context) -> TargetView { TargetView() }
+    func updateNSView(_ nsView: TargetView, context: Context) {}
+
+    final class TargetView: NSView {
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.systemOrange.withAlphaComponent(0.3).setFill()
+            dirtyRect.fill()
+        }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .group }
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let menu = NSMenu(title: "Hover menu")
+            let status = NSMenuItem(title: "Not hovered", action: nil, keyEquivalent: "")
+            status.identifier = NSUserInterfaceItemIdentifier("hover-status")
+            let row = NSMenuItem()
+            row.view = HoverRowView(frame: NSRect(x: 0, y: 0, width: 180, height: 28)) { side in
+                status.title = side.map { "Hovered \($0)" } ?? "Not hovered"
+            }
+            menu.addItem(row)
+            menu.addItem(status)
+            return menu
+        }
+    }
+
+    final class HoverRowView: NSView {
+        private let changed: (String?) -> Void
+        init(frame: NSRect, changed: @escaping (String?) -> Void) {
+            self.changed = changed
+            super.init(frame: frame)
+        }
+        required init?(coder: NSCoder) { nil }
+
+        override func updateTrackingAreas() {
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+            super.updateTrackingAreas()
+        }
+        private func update(_ event: NSEvent?) {
+            guard !SampleModel.regressions.contains("menuhover") else { return }
+            guard let event else { changed(nil); return }
+            let x = convert(event.locationInWindow, from: nil).x
+            changed(x < bounds.midX ? "left" : "right")
+        }
+        override func mouseEntered(with event: NSEvent) { update(event) }
+        override func mouseMoved(with event: NSEvent) { update(event) }
+        override func mouseExited(with event: NSEvent) { update(nil) }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.systemPurple.withAlphaComponent(0.3).setFill()
+            dirtyRect.fill()
+        }
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .group }
+        override func accessibilityIdentifier() -> String { "hover-row" }
     }
 }
