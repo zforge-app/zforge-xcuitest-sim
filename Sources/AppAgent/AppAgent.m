@@ -1042,6 +1042,17 @@ static void XAInstallDiagnostics(void) {
     }];
 }
 
+#pragma mark - Unsupported: window-server drag and drop
+
+// Drag-and-drop sessions (NSDraggingSession, including SwiftUI .draggable/.onDrag) run in Core Drag,
+// which tracks the hardware pointer and shows a drag window on the user's screen. They cannot be
+// simulated in-process; the agent refuses to start the drag loop (no window is created) and logs the
+// reason, so the test fails instead of touching the screen. Such tests belong to the real mode.
+static IMP gDragUntilMouseUp;
+static void XADragUntilMouseUp(id self, SEL _cmd, id arg1, CGPoint location, NSUInteger modifiers) {
+    XAInfo(@"UNSUPPORTED: a drag-and-drop session started (window-server drag and drop is not simulated; run this test in the real mode)");
+}
+
 #pragma mark - Installation
 
 static void XAInstall(void) {
@@ -1050,6 +1061,7 @@ static void XAInstall(void) {
     gSendEvent = XASwizzle(app, @selector(sendEvent:), (IMP)XASendEvent);
     gIsActive = XASwizzle(app, @selector(isActive), (IMP)XAIsActive);
     gNextEvent = XASwizzle(app, @selector(nextEventMatchingMask:untilDate:inMode:dequeue:), (IMP)XANextEvent);
+    gDragUntilMouseUp = XASwizzle(NSClassFromString(@"NSCoreDragManager"), NSSelectorFromString(@"_dragUntilMouseUp:location:modifiers:"), (IMP)XADragUntilMouseUp);
     Class areaManager = NSClassFromString(@"_NSTrackingAreaAKManager");
     gUpdateMenuAreas = XASwizzle(areaManager, NSSelectorFromString(@"_updateMenuActiveTrackingAreasForWindowLocation:modifierFlags:"), (IMP)XAUpdateMenuAreas);
     gSetCursorForMouseLocation = XASwizzle(areaManager, NSSelectorFromString(@"setCursorForMouseLocation:"), (IMP)XASetCursorForMouseLocation);
