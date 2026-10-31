@@ -305,6 +305,36 @@ static id XAMenuItemAttributeValue(NSMenuItem *self, SEL _cmd, NSString *attribu
 static NSMenuItem *gPressedMenuBarItem;
 
 // Returns YES when the button event was consumed by the simulated menu bar.
+// Menu bar menus open one at a time in a session: switching to another menu (arrow keys, moving the
+// pointer over another title) cancels the open pop-up and the session opens the next one after
+// the cancelled pop-up has returned, so pop-ups never nest.
+static NSMenuItem *gPendingMenuBarItem;
+
+static void XAStartMenuBarSession(NSMenuItem *item) {
+    gPendingMenuBarItem = item;
+    if (gOpenMenuBarMenu) { [gOpenMenuBarMenu cancelTrackingWithoutAnimation]; return; }
+    XARunOnMain(0, ^{
+        while (gPendingMenuBarItem) {
+            NSMenuItem *next = gPendingMenuBarItem;
+            gPendingMenuBarItem = nil;
+            BOOL found;
+            NSRect rect = XAMenuBarRectForItem(next, &found);
+            if (!found || !next.submenu) continue;
+            XAInfo(@"opening menu bar menu %@", next.title);
+            gOpenMenuBarMenu = next.submenu;
+            [next.submenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(rect.origin.x, rect.origin.y) inView:nil];
+            gOpenMenuBarMenu = nil;
+            XAInfo(@"menu bar menu %@ closed", next.title);
+        }
+    });
+}
+
+static NSMenuItem *XAOpenMenuBarItem(void) {
+    for (NSArray *entry in XAMenuBarLayout()) if ([entry[0] submenu] == gOpenMenuBarMenu) return entry[0];
+    return nil;
+}
+
+// Returns YES when the button event was consumed by the simulated menu bar.
 static BOOL XAMenuBarButton(NSUInteger button, BOOL down) {
     NSRect rect;
     NSMenuItem *item = XAMenuBarItemAtPoint(gMouse, &rect);
@@ -312,18 +342,32 @@ static BOOL XAMenuBarButton(NSUInteger button, BOOL down) {
     if (down) { gPressedMenuBarItem = item; return YES; }
     if (gPressedMenuBarItem != item || !item.submenu) { gPressedMenuBarItem = nil; return YES; }
     gPressedMenuBarItem = nil;
-    NSMenu *submenu = item.submenu;
     // Clicking the title of the open menu closes it, as in the real menu bar.
-    if (gOpenMenuBarMenu == submenu) { [submenu cancelTracking]; return YES; }
-    if (gOpenMenuBarMenu) [gOpenMenuBarMenu cancelTrackingWithoutAnimation];
-    // Opened after the current step returns: the pop-up runs a nested tracking loop.
-    XARunOnMain(0, ^{
-        XAInfo(@"opening menu bar menu %@", item.title);
-        gOpenMenuBarMenu = submenu;
-        [submenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(rect.origin.x, rect.origin.y) inView:nil];
-        if (gOpenMenuBarMenu == submenu) gOpenMenuBarMenu = nil;
-        XAInfo(@"menu bar menu %@ closed", item.title);
-    });
+    if (gOpenMenuBarMenu == item.submenu) { gPendingMenuBarItem = nil; [item.submenu cancelTracking]; return YES; }
+    XAStartMenuBarSession(item);
+    return YES;
+}
+
+// While a menu bar menu is open, moving the pointer over another title switches to its menu.
+static void XAMenuBarHover(NSPoint point) {
+    if (!gOpenMenuBarMenu || XAWindowAtPoint(point)) return;
+    NSMenuItem *item = XAMenuBarItemAtPoint(point, NULL);
+    if (item.submenu && item.submenu != gOpenMenuBarMenu) XAStartMenuBarSession(item);
+}
+
+// Left/Right arrows move along the menu bar when the keyboard is in the top-level menu (no item of
+// an open submenu is highlighted); otherwise the pop-up handles them (closing or entering submenus).
+static BOOL XAMenuBarArrow(NSString *key, NSEventModifierFlags modifiers) {
+    if (!gOpenMenuBarMenu || (modifiers & NSEventModifierFlagDeviceIndependentFlagsMask & ~(NSEventModifierFlagFunction | NSEventModifierFlagNumericPad))) return NO;
+    unichar c = key.length == 1 ? [key characterAtIndex:0] : 0;
+    if (c != NSLeftArrowFunctionKey && c != NSRightArrowFunctionKey) return NO;
+    for (NSMenuItem *entry in gOpenMenuBarMenu.itemArray) if (entry.submenu.highlightedItem) return NO;
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSArray *entry in XAMenuBarLayout()) if ([entry[0] submenu]) [items addObject:entry[0]];
+    NSUInteger index = [items indexOfObject:XAOpenMenuBarItem()];
+    if (index == NSNotFound || !items.count) return NO;
+    NSUInteger next = c == NSLeftArrowFunctionKey ? (index + items.count - 1) % items.count : (index + 1) % items.count;
+    XAStartMenuBarSession(items[next]);
     return YES;
 }
 
@@ -356,8 +400,11 @@ static NSEventType XAMoveType(void) {
     return NSEventTypeMouseMoved;
 }
 
+static void XAMenuBarHover(NSPoint point);
+
 static void XAMoveTo(NSPoint point) {
     gMouse = point;
+    XAMenuBarHover(point);
     XAPostMouse(XAMoveType(), point, 0, gButtons ? 1 : 0);
     XAPostTrackingMarker();
 }
@@ -389,13 +436,15 @@ static NSDictionary<NSString *, NSArray *> *XAKeyTable(void) {
             UInt32 modifierSets[] = {0, shiftKey >> 8, optionKey >> 8, (shiftKey | optionKey) >> 8};
             NSEventModifierFlags flagSets[] = {0, NSEventModifierFlagShift, NSEventModifierFlagOption,
                                                NSEventModifierFlagShift | NSEventModifierFlagOption};
-            for (int m = 3; m >= 0; m--) {
+            // First match wins: the fewest modifiers, then the lowest key code, so main-block keys are
+            // preferred over keypad keys that type the same character (keypad codes are 65–92).
+            for (int m = 0; m < 4; m++) {
                 for (UInt16 code = 0; code < 128; code++) {
                     UInt32 deadKeys = 0; UniChar chars[4]; UniCharCount length = 0;
                     if (UCKeyTranslate(layout, code, kUCKeyActionDown, modifierSets[m], LMGetKbdType(),
                                        kUCKeyTranslateNoDeadKeysMask, &deadKeys, 4, &length, chars) == noErr && length == 1) {
                         NSString *character = [NSString stringWithCharacters:chars length:1];
-                        map[character] = @[@(code), @(flagSets[m])]; // lower modifier sets overwrite higher ones
+                        if (!map[character]) map[character] = @[@(code), @(flagSets[m])];
                     }
                 }
             }
@@ -433,6 +482,9 @@ static NSWindow *XAKeyTargetWindow(void) {
 static void XAPostKey(XAKeyStroke stroke, NSString *characters, NSEventModifierFlags flags, BOOL down) {
     CGEventRef cg = CGEventCreateKeyboardEvent(NULL, stroke.found ? stroke.code : 0, down);
     CGEventSetFlags(cg, (CGEventFlags)flags);
+    // Hardware events carry the keyboard type; AppKit needs it to translate the key with other
+    // modifiers (e.g. matching ⌘= against a ⌘+ key equivalent on layouts where + is Shift-=).
+    CGEventSetIntegerValueField(cg, kCGKeyboardEventKeyboardType, LMGetKbdType());
     if (!stroke.found) {
         UniChar buffer[8]; NSUInteger length = MIN(characters.length, 8u);
         [characters getCharacters:buffer range:NSMakeRange(0, length)];
@@ -461,7 +513,10 @@ static void XASetFlags(NSEventModifierFlags flags) {
     }
 }
 
+static BOOL XAMenuBarArrow(NSString *key, NSEventModifierFlags modifiers);
+
 static void XATypeKey(NSString *key, NSEventModifierFlags modifiers) {
+    if (XAMenuBarArrow(key, gFlags | modifiers)) return;
     XAKeyStroke stroke = XAStrokeFor(key);
     NSEventModifierFlags flags = gFlags | modifiers | stroke.flags;
     unichar first = [key characterAtIndex:0];
@@ -708,6 +763,20 @@ static id XAHandleCommand(NSString *command) {
         return out;
     }
 #pragma clang diagnostic pop
+    if ([command isEqualToString:@"diagactive"]) {
+        NSRunningApplication *me = NSRunningApplication.currentApplication;
+        return [NSString stringWithFormat:@"NSApp.isActive=%d running.isActive=%d ownsMenuBar=%d front=%@ keyAppearance=%@",
+                NSApp.isActive, me.isActive, me.ownsMenuBar, NSWorkspace.sharedWorkspace.frontmostApplication.localizedName,
+                [NSApp.keyWindow respondsToSelector:NSSelectorFromString(@"hasKeyAppearance")] ? [NSApp.keyWindow valueForKey:@"hasKeyAppearance"] : @"?"];
+    }
+    if ([command isEqualToString:@"diagfocus"]) {
+        NSMutableString *out = [NSMutableString stringWithFormat:@"key=%@ main=%@ ", NSApp.keyWindow.className, NSApp.mainWindow.className];
+        for (NSWindow *window in XAWindowsFrontToBack()) {
+            [out appendFormat:@"[%@ '%@' key=%d main=%d canKey=%d occl=%lu fr=%@] ", window.className, window.title, window.isKeyWindow,
+             window.isMainWindow, window.canBecomeKeyWindow, (unsigned long)window.occlusionState, window.firstResponder.className];
+        }
+        return out;
+    }
     if ([command hasPrefix:@"diagraw:"]) {
         // diagraw:<chars>:<unmodified chars>:<NSEvent flags hex>:<keycode>
         NSArray *parts = [command componentsSeparatedByString:@":"];
@@ -774,7 +843,61 @@ static void XALogProcessWindows(NSString *when) {
     }
 }
 
+static IMP gMakeFirstResponder;
+static BOOL XAMakeFirstResponder(NSWindow *self, SEL _cmd, NSResponder *responder) {
+    BOOL ok = ((BOOL (*)(id, SEL, NSResponder *))gMakeFirstResponder)(self, _cmd, responder);
+    XAInfo(@"diag: makeFirstResponder %@ -> %d (window key=%d, NSApp.keyWindow=%@)\n%@", responder.className, ok,
+           self.isKeyWindow, NSApp.keyWindow.className, [[NSThread callStackSymbols] subarrayWithRange:NSMakeRange(1, MIN(8u, NSThread.callStackSymbols.count - 1))]);
+    return ok;
+}
+
+static IMP gDiagMenuItemAttributeValue;
+static id XADiagMenuItemAttributeValue(NSMenuItem *self, SEL _cmd, NSString *attribute) {
+    id value = ((id (*)(id, SEL, NSString *))gDiagMenuItemAttributeValue)(self, _cmd, attribute);
+    if (self.menu == NSApp.mainMenu && ([attribute isEqualToString:NSAccessibilitySelectedAttribute] ||
+                                        [attribute isEqualToString:NSAccessibilityPositionAttribute] ||
+                                        [attribute isEqualToString:NSAccessibilitySizeAttribute])) {
+        XAInfo(@"diag: menubar %@ %@ = %@", self.title, attribute, value);
+    }
+    return value;
+}
+
 static void XAInstallDiagnostics(void) {
+    gDiagMenuItemAttributeValue = XASwizzle([NSMenuItem class], @selector(accessibilityAttributeValue:), (IMP)XADiagMenuItemAttributeValue);
+    for (NSNotificationName name in @[NSMenuDidBeginTrackingNotification, NSMenuDidEndTrackingNotification]) {
+        [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *note) {
+            XAInfo(@"diag: %@ %@", note.name, [note.object title]);
+        }];
+    }
+    // Samples the menu bar items' AXSelected every 20 ms (all run loop modes) and logs changes, so a
+    // real run shows exactly when AppKit flips it.
+    static NSString *last;
+    NSTimer *sampler = [NSTimer timerWithTimeInterval:0.02 repeats:YES block:^(NSTimer *timer) {
+        NSMutableString *state = [NSMutableString string];
+        for (NSMenuItem *item in NSApp.mainMenu.itemArray) {
+            id selected = ((id (*)(id, SEL, NSString *))gDiagMenuItemAttributeValue)(item, @selector(accessibilityAttributeValue:), NSAccessibilitySelectedAttribute);
+            if ([selected boolValue]) [state appendFormat:@"%@ ", item.title];
+        }
+        if (![state isEqualToString:last ?: @"?"]) { XAInfo(@"diag: menubar selected now [%@]", state); last = [state copy]; }
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:sampler forMode:NSRunLoopCommonModes];
+    [[NSRunLoop mainRunLoop] addTimer:sampler forMode:NSEventTrackingRunLoopMode];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
+                                                  usingBlock:^(NSNotification *note) {
+        // Menu tracking may run in a private mode; add the sampler to whatever mode is current.
+        dispatch_async(dispatch_get_main_queue(), ^{});
+        CFRunLoopMode mode = CFRunLoopCopyCurrentMode(CFRunLoopGetMain());
+        if (mode) { CFRunLoopAddTimer(CFRunLoopGetMain(), (__bridge CFRunLoopTimerRef)sampler, mode); XAInfo(@"diag: sampler mode %@", mode); CFRelease(mode); }
+    }];
+    for (NSNotificationName name in @[NSApplicationDidBecomeActiveNotification, NSApplicationDidResignActiveNotification,
+                                      NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
+                                      NSWindowDidBecomeMainNotification, NSWindowDidResignMainNotification]) {
+        [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil queue:nil usingBlock:^(NSNotification *note) {
+            NSArray *stack = NSThread.callStackSymbols;
+            XAInfo(@"diag: %@ %@\n%@", note.name, [note.object className], [stack subarrayWithRange:NSMakeRange(1, MIN(9u, stack.count - 1))]);
+        }];
+    }
+    gMakeFirstResponder = XASwizzle([NSWindow class], @selector(makeFirstResponder:), (IMP)XAMakeFirstResponder);
     gWindowInit = XASwizzle([NSWindow class], @selector(initWithContentRect:styleMask:backing:defer:), (IMP)XAWindowInit);
     [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
                                                   usingBlock:^(NSNotification *note) {
@@ -811,7 +934,14 @@ static void XAInstall(void) {
 __attribute__((constructor)) static void XCUISimAgentInit(void) {
     NSDictionary *env = NSProcessInfo.processInfo.environment;
     gEnabled = [env[@"XCUISIM_ENABLED"] isEqualToString:@"1"];
-    if (!gEnabled) return;
+    if (!gEnabled) {
+        // Observe-only mode for real runs: records responder and activation changes, changes nothing.
+        if ([env[@"XCUISIM_OBSERVE"] isEqualToString:@"1"]) {
+            XAInstallDiagnostics();
+            XAInfo(@"observer loaded in %@ pid %d", NSProcessInfo.processInfo.processName, getpid());
+        }
+        return;
+    }
     gVisible = [env[@"XCUISIM_VISIBLE"] isEqualToString:@"1"];
     gDropEvents = [env[@"XCUISIM_DROP_EVENTS"] isEqualToString:@"1"];
     gStatus = [NSMutableDictionary dictionary];

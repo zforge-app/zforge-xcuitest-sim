@@ -23,13 +23,25 @@ def entitlements(app):
     return plistlib.loads(out) if out.strip() else {}
 
 
+def refuse_if_running(app):
+    # Rewriting the binaries of a running copy invalidates its mapped code signature: the kernel
+    # kills it and macOS shows a crash dialog on the user's screen.
+    running = subprocess.run(["pgrep", "-f", os.path.join(os.path.abspath(app), "Contents", "MacOS") + "/"],
+                             capture_output=True, text=True).stdout.split()
+    if running:
+        sys.exit(f"{app} is running (pids {', '.join(running)}); quit it before preparing")
+
+
 def resign(app, identity, agent):
+    refuse_if_running(app)
     ents = entitlements(app)
     ents.pop("com.apple.security.cs.allow-dyld-environment-variables", None)
     with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
         executable = os.path.join(app, "Contents", "MacOS", plistlib.load(f)["CFBundleExecutable"])
     macos = os.path.dirname(executable)
-    shutil.copy2(agent, os.path.join(macos, "libXCUISimAgent.dylib"))
+    staged = os.path.join(macos, ".libXCUISimAgent.dylib.new")
+    shutil.copy2(agent, staged)
+    os.replace(staged, os.path.join(macos, "libXCUISimAgent.dylib"))  # new inode, never rewritten in place
     subprocess.run(["codesign", "-f", "-s", identity, os.path.join(macos, "libXCUISimAgent.dylib")], check=True)
     candidates = [executable] + [p for p in [executable + ".debug.dylib"] if os.path.exists(p)]
     subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "insert-load-command.py"),
