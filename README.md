@@ -26,7 +26,16 @@ Scripts/prepare-xctestrun.py <xctestrun> --identity "Apple Development"   # writ
 Scripts/run-offscreen.sh <name> <offscreen.xctestrun> <app>,<runner> [-only-testing:...]
 ```
 
-`prepare-xctestrun.py` modifies the built app in place (adds a weak load command for the agent and re-signs it); use it on a test build copy only.
+`prepare-xctestrun.py` modifies the built app in place (adds a weak load command for the agent and re-signs it); use it on a test build copy only. It refuses copies outside `$XCUISIM_WORK`.
+
+### Copies and the system
+
+Every build and copy the tool makes lives in `$XCUISIM_WORK` and is kept from leaking into the rest of the system (`Scripts/copy_hygiene.py`, `Notes/copy-hygiene-2026-11-01.md`):
+
+- **No app extensions.** Copies keep the original bundle identifiers of their extensions, and the system can load a copy's extension instead of the developer's (a Finder Sync extension did). `prepare-xctestrun.py` and `Scripts/build-for-testing.sh` (use it for every `-derivedDataPath` build in the work directory) remove `Contents/PlugIns` and `Contents/Extensions` from the apps (test bundles stay) and loose extension products, re-sign, and prune the xctestruns. Tests that need an extension run in the real group, from the developer's own build.
+- **Registration.** `run-offscreen.sh` and `run-lanes.py` remove leftover Launch Services and pluginkit registrations of the copy before a run and unregister it after the run, also after an abort. macOS services (Spotlight, Finder, HIServices) re-register app bundles they already know within seconds to minutes; such a record has no extension, so it cannot take the place of the real one.
+- **Processes.** A run does not start while a process of the copy is alive; at the end (also on abort) leftover processes of the copy, such as the app XCUITest leaves running after the last test, are terminated and reported.
+- `copy_hygiene.py check|cleanup|strip [--thorough] <dir>` inspects or cleans any directory of the work directory; tests: `python3 -m unittest discover -s Tests -v` (the last test checks the whole work directory).
 
 Parallel lanes (prototype, see `Notes/zforge-parallel-lanes-2026-10-31.md`):
 

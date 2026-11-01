@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Prepares an offscreen variant of a built XCUITest run.
 
-Given the products directory of `xcodebuild build-for-testing` (or a copy of it), this:
+Given a copy (inside $XCUISIM_WORK) of the products directory of `xcodebuild build-for-testing`, this:
+  0. removes app extensions and plug-ins from the copy's apps (copy_hygiene.strip_extensions): they keep
+     the original bundle identifiers, and a registered copy would make the system use the copy's
+     extension instead of the real one. Tests that need an extension belong in the real group;
   1. adds a weak load command for the app agent to each UI target app's main executable and
      re-signs the app with its existing entitlements (the copy only; never the Release build).
      LaunchServices launches ignore DYLD_INSERT_LIBRARIES, so the agent is loaded like a library
@@ -12,6 +15,9 @@ Given the products directory of `xcodebuild build-for-testing` (or a copy of it)
 Usage: prepare-xctestrun.py <xctestrun> --identity <codesign identity> [--env KEY=VALUE ...]
 """
 import argparse, os, plistlib, shutil, subprocess, sys, tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copy_hygiene
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORK = os.environ.get("XCUISIM_WORK", os.path.expanduser("~/Library/Caches/dev.xcuitestsim"))
@@ -67,6 +73,20 @@ def main():
         if os.path.abspath(testroot).startswith(os.path.join(os.path.expanduser("~"), protected) + os.sep):
             sys.exit(f"{testroot} is inside ~/{protected}; macOS would prompt the user when the runner reads it. "
                      "Build into $XCUISIM_WORK (default ~/Library/Caches/dev.xcuitestsim).")
+    try:
+        copy_hygiene.copy_root(testroot)
+    except copy_hygiene.HygieneError as error:
+        sys.exit(f"{error}. Copy the build products there first (the tool modifies them).")
+    with open(args.xctestrun, "rb") as f:
+        run = plistlib.load(f)
+    for target in ([run[k] for k in run if k not in ("__xctestrun_metadata__", "CodeCoverageBuildableInfos")]
+                   if "TestConfigurations" not in run else [t for c in run["TestConfigurations"] for t in c["TestTargets"]]):
+        if target.get("IsUITestBundle"):
+            refuse_if_running(target["UITargetAppPath"].replace("__TESTROOT__", testroot))
+    # Every app of the copy loses its extensions; every xctestrun next to it (this one included) stops
+    # referring to them.
+    for path in copy_hygiene.strip_tree(testroot):
+        print(f"removed {path}")
     with open(args.xctestrun, "rb") as f:
         run = plistlib.load(f)
     shim = os.path.join(BUILD, "libXCUISimRunnerShim.dylib")
