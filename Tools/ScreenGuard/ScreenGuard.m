@@ -85,8 +85,12 @@ int main(int argc, char **argv) {
                     NSString *key = [NSString stringWithFormat:@"%@-%@", w[(id)kCGWindowOwnerPID], w[(id)kCGWindowNumber]];
                     if ([reported containsObject:key]) continue;
                     [reported addObject:key]; visibleWindows++;
-                    fprintf(out, "%.3f VISIBLE window %s #%s alpha %.2f layer %s bounds %s\n", now.timeIntervalSince1970,
-                            [w[(id)kCGWindowOwnerName] UTF8String], [[w[(id)kCGWindowNumber] description] UTF8String], alpha,
+                    // Owner pid and executable path: several processes can share a name (lane copies, another
+                    // build of the same app), so the name alone does not say whose window it was.
+                    pid_t owner = [w[(id)kCGWindowOwnerPID] intValue];
+                    NSString *path = [NSRunningApplication runningApplicationWithProcessIdentifier:owner].executableURL.path ?: @"?";
+                    fprintf(out, "%.3f VISIBLE window %s pid %d path %s #%s alpha %.2f layer %s bounds %s\n", now.timeIntervalSince1970,
+                            [w[(id)kCGWindowOwnerName] UTF8String], owner, path.UTF8String, [[w[(id)kCGWindowNumber] description] UTF8String], alpha,
                             [[w[(id)kCGWindowLayer] description] UTF8String], [[w[(id)kCGWindowBounds] description] UTF8String]);
                 }
                 samples++;

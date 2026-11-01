@@ -170,8 +170,38 @@ original copies, session unlocked):
   at launch, 1 (`testSettingsToggle…`) by one asynchronous wait position; screen guard 0 synthetic
   events, 0 visible windows (one frontmost change: the screen locking at the end).
 
-**Not yet confirmed with the final agent:** a parallel run (`par3f`) and the two-copy menu probe. Both
-were blocked by the screen lock (see above) and should be re-run once the session is unlocked.
+### Confirmation with the final agent (2026-10-31, 23:30–23:40)
+
+Run after the user unlocked the session, on the existing lane copies of `7ea66ec` (no rebuild from
+the Zforge repository) holding the final agent (CDHash `a7f1fa42…`, the committed source). The session
+was checked unlocked before each step and stayed unlocked. Another agent thread was working in the
+Zforge repository at the same time (builds into `/tmp/zf-fix/dd`, then a unit-test run); a watcher
+sampled foreign `xcodebuild`, test runner and `Zforge` processes every 2 s.
+
+1. **Two-copy menu probe** (`menuprobe-final`): lane 1 and lane 2 copies launched directly with the
+   agent, File opened in A, then in B, open menus counted through accessibility. 3/3 trials: A keeps its
+   menu open after B opens one (A=1, B=1); before the fix the same probe gave A=0 in 3/3. The agent
+   logged 3 ignored menu-tracking notifications. Screen guard: 0 synthetic events, 0 visible windows, no
+   frontmost change. No foreign process was running.
+2. **3 lanes, 14 tests** (`par3g`): **14/14 pass** (lane 1 4/4, lane 2 5/5, lane 3 5/5), wall 240.1 s.
+   Screen guard: 0 synthetic events, 0 frontmost changes, no cursor movement, **1 visible window that
+   was not ours**: a `Zforge` window of 1082 × 708 at 1793500750.3, when the watcher saw the other
+   thread's unit-test host (`/tmp/zf-fix/dd/.../Zforge.app`, pid 84075) running. The guard matched it by
+   process name only; it now also logs the owner pid and executable path.
+   Activity trees (same matrix as above): identical to the earlier 3-lane runs: 12 tests `=`, `=T` or
+   `=o`; `testListColumnsReorderByDragging` D−4 (lane state, divergence 1);
+   `testFileOpenNavigates…` D−38 (the same "open menu during menu traversal" branch as divergence 2,
+   plus one extra polling iteration on the "Sample.zip" window).
+
+   **Timing is interference, not a result.** CPU outside the test processes averaged 229 % before the
+   other thread's unit-test run appeared (113 s into the run) and 304 % while it ran (about 127 s of
+   the 240 s), against 103–143 % in `par3c`–`par3e`; Σ test time 698 s against 560 s on average in those
+   runs, with the largest slowdowns in tests that overlapped the unit-test run (+47 % to +123 %). The
+   unit-test run does not use UI automation; no sign of testmanagerd contention, but its CPU was not
+   sampled separately. The 3-lane timing of record stays 182–203 s (`par3c`–`par3e`).
+
+With this, the final agent is confirmed in parallel (outcome, screen guard, trees) and for the
+cross-process menu case.
 
 ## Recommendation
 
@@ -197,7 +227,10 @@ meant as equivalence evidence against real trees.
   start when locked; a batch must keep the session unlocked.
 - testmanagerd's Automation Mode authentication prompt (summary note) can appear when UI tests have not
   run for a while; `run-lanes.py` aborts all lanes when a system dialog comes to the front.
-- Sample size: 2 runs with 2 lanes, 3 with 3, 1 with 4.
+- Sample size: 2 runs with 2 lanes, 3 timed (plus 1 under interference) with 3, 1 with 4.
+- Other work on the same machine (builds, unit tests, real UI tests) shares CPU, the screen and
+  testmanagerd; timings taken next to it are not comparable, and a guard that watches by process name
+  also sees another build of the same app.
 
 ## Tool changes in this phase
 
@@ -207,3 +240,5 @@ meant as equivalence evidence against real trees.
 - Agent: on a peek, the ignored notification is dequeued before the loop continues (see revalidation).
 - New `Scripts/make-lane.py` and `Scripts/run-lanes.py` (refuses to start with a locked session);
   README usage.
+- ScreenGuard: a visible window line also carries the owner pid and executable path (added after
+  `par3g`, where another app with the same process name showed a window).
