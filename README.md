@@ -28,6 +28,17 @@ Scripts/run-offscreen.sh <name> <offscreen.xctestrun> <app>,<runner> [-only-test
 
 `prepare-xctestrun.py` modifies the built app in place (adds a weak load command for the agent and re-signs it); use it on a test build copy only.
 
+Parallel lanes (prototype, see `Notes/zforge-parallel-lanes-2026-10-31.md`):
+
+```sh
+# one isolated copy per lane: distinct app and runner bundle IDs, optional app group rename
+Scripts/make-lane.py <products dir> <lane dir> --suffix lane2 --identity "Apple Development" \
+    [--app-group-suffix] [--plist-suffix-key <Info.plist key naming the app group>]
+# run lanes together under one ScreenGuard, sampling CPU and memory
+Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner> \
+    --lane <lane1 offscreen.xctestrun> <test id>,<test id> --lane <lane2 offscreen.xctestrun> <test id>
+```
+
 ## Planned parts
 
 - **Runner shim:** loaded into the UI test runner; replaces `_XCT_synthesizeEvent:` (and, where needed, launch/terminate) with delivery over a private channel.

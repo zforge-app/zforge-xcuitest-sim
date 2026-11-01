@@ -129,3 +129,12 @@ on the app's main thread in every run loop mode, including menu tracking.
 - `NSView.visibleRect` extends past the bounds when superviews do not clip (macOS 14+ default).
 - Tracking areas are delivered by the window server; posted mouse-moved events do not produce
   `mouseEntered:`/`mouseExited:`. Views often recreate their areas in `-updateTrackingAreas`.
+- Cross-process menu dismissal (macOS 27.0.1, 2026-10-31): when a process starts menu tracking,
+  `-[NSMenuTrackingSession sendBeginTrackingNotifications]` posts
+  `com.apple.HIToolbox.beginMenuTrackingNotification` (`CFNotificationCenterPostNotification`, a C call),
+  and other apps receive a window-server event whose description reads `type=ProcessNotification`,
+  `subtype=16384` (0x4000); AppKit dismisses an open menu on it. The event type is not a public
+  `NSEventType` and `-subtype` must not be read on key events (raises). The agent drops these events;
+  outgoing notifications from the simulated app are still posted.
+- A locked console session (`IOConsoleUsers` → `CGSSessionScreenIsLocked`) leaves the app under test
+  with an empty, disabled accessibility application element, in the simulated mode too.

@@ -438,6 +438,31 @@ static void XASetCursorForMouseLocation(id self, SEL _cmd, CGPoint location) {
     if (!logged) { logged = YES; XAInfo(@"ignored real-cursor tracking update at %@", NSStringFromPoint(location)); }
 }
 
+// The process-notification event type is private; it is identified once from its description, and
+// only for event types outside the public ones (asking -subtype of a key event raises).
+static BOOL XAIsOtherProcessMenuTrackingEvent(NSEvent *event) {
+    static NSInteger processNotificationType = -1;
+    NSEventType type = event.type;
+    if (processNotificationType >= 0) return (NSInteger)type == processNotificationType && event.subtype == 0x4000;
+    switch (type) {
+        case NSEventTypeLeftMouseDown: case NSEventTypeLeftMouseUp: case NSEventTypeRightMouseDown: case NSEventTypeRightMouseUp:
+        case NSEventTypeMouseMoved: case NSEventTypeLeftMouseDragged: case NSEventTypeRightMouseDragged: case NSEventTypeMouseEntered:
+        case NSEventTypeMouseExited: case NSEventTypeKeyDown: case NSEventTypeKeyUp: case NSEventTypeFlagsChanged:
+        case NSEventTypeAppKitDefined: case NSEventTypeSystemDefined: case NSEventTypeApplicationDefined: case NSEventTypePeriodic:
+        case NSEventTypeCursorUpdate: case NSEventTypeScrollWheel: case NSEventTypeTabletPoint: case NSEventTypeTabletProximity:
+        case NSEventTypeOtherMouseDown: case NSEventTypeOtherMouseUp: case NSEventTypeOtherMouseDragged: case NSEventTypeGesture:
+        case NSEventTypeMagnify: case NSEventTypeSwipe: case NSEventTypeRotate: case NSEventTypeBeginGesture: case NSEventTypeEndGesture:
+        case NSEventTypeSmartMagnify: case NSEventTypeQuickLook: case NSEventTypePressure: case NSEventTypeDirectTouch: case NSEventTypeChangeMode:
+            return NO;
+        default:
+            break;
+    }
+    if (![event.description containsString:@"type=ProcessNotification"]) return NO;
+    processNotificationType = type;
+    XAInfo(@"process notification events have type %ld", (long)type);
+    return event.subtype == 0x4000;
+}
+
 // Every event loop (the main loop, nested tracking loops, menu tracking) dequeues through here.
 static IMP gNextEvent;
 static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSDate *until, NSRunLoopMode mode, BOOL dequeue) {
@@ -446,6 +471,10 @@ static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSD
     for (;;) {
         NSEvent *event = ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, mask, until, mode, dequeue);
         if (traceOnly) {
+            if (event && (event.type == NSEventTypeAppKitDefined || event.type == NSEventTypeSystemDefined)) {
+                XAInfo(@"pointer-trace kitdefined type=%lu subtype=%d data1=%ld data2=%ld win=%ld mode=%@", (unsigned long)event.type, event.subtype,
+                       (long)event.data1, (long)event.data2, (long)event.windowNumber, mode);
+            }
             if (event && event.type != NSEventTypeAppKitDefined && event.type != NSEventTypeSystemDefined && event.type != NSEventTypeApplicationDefined && event.type != NSEventTypePeriodic) {
                 CGEventRef cg = event.CGEvent;
                 if (event.type == NSEventTypeScrollWheel) XAInfo(@"pointer-trace scroll dx=%.1f dy=%.1f precise=%d inverted=%d phase=%lu momentum=%lu loc=%@ win=%ld",
@@ -459,7 +488,21 @@ static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSD
             }
             return event;
         }
-        if (!event || !XAIsRealPointerEvent(event)) return event;
+        // When any other process starts tracking a menu, the window server sends a process
+        // notification event (subtype 0x4000) that makes an open menu dismiss itself. Other lanes and
+        // the user's own menus must not close the simulated app's menus.
+        if (event && XAIsOtherProcessMenuTrackingEvent(event)) {
+            XAInfo(@"ignored another process's menu tracking notification");
+            // A peek would return the same event again: take it off the queue first (same mask, so the
+            // first matching event is this one; the private type may not fit NSEventMaskFromType).
+            if (!dequeue) {
+                ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, mask, [NSDate distantPast], mode, YES);
+            }
+            continue;
+        }
+        static int noFilter = -1;
+        if (noFilter < 0) noFilter = getenv("XCUISIM_NO_POINTER_FILTER") != NULL; // diagnostics only
+        if (!event || noFilter || !XAIsRealPointerEvent(event)) return event;
         if (!dequeue) {
             ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, NSEventMaskFromType(event.type), [NSDate distantPast], mode, YES);
         }
