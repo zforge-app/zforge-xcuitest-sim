@@ -4,6 +4,9 @@ Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), Apple M5 (10 cores), 2
 Zforge `7ea66ec470133c21025b53d7f64f6873c226a863` (clean; the repository was only read), the same
 build as every earlier comparison (`Notes/zforge-coverage-summary-2026-10-31.md`). Tool at `23150cf`
 plus the changes listed below. No real (screen-taking) run was needed or made in this phase.
+Run artifacts named here (`par*`, `menuprobe-final`, `lock-probe`, `stress-fileopen*`, …) are in
+`.local/results/cache-2026-11-01/lanes/results/` and `…/cmp-zf/results-stages/` since 2026-11-01; the
+lane copies were deleted (see `Notes/evidence-2026-11-01.md`).
 
 Scope: the 14 tests that are equivalent in the simulated mode (summary note, table rows 1–3, 5–15
 without 4), run serially and in 2, 3 and 4 parallel lanes, all simulated.

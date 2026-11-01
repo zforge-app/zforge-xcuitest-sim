@@ -1,7 +1,8 @@
 # Copies, builds and the system: extensions, registration, leftover processes (2026-11-01)
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), Apple M5, single display. Tool at `082043b`
-plus the changes below. No real (screen-taking) run. The Zforge repository was not read or built in
+plus the changes below. No real (screen-taking) run. Run artifacts named here: `.local/results/cache-2026-11-01/lanes/results/`
+(see `Notes/evidence-2026-11-01.md`; the copies and builds described below were deleted afterwards). The Zforge repository was not read or built in
 this phase; its first-consumer data comes from the existing copies of `7ea66ec` in the work
 directory.
 

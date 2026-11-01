@@ -279,82 +279,156 @@ class ProcessTests(SelfTestDir):
 
 
 class RunnerTests(SelfTestDir):
-    """run-lanes.py and run-offscreen.sh with a fake xcodebuild that launches a copy's app and leaves
-    it running, as XCUITest does with the app of the last test."""
+    """run-lanes.py and run-offscreen.sh on a fake build, through the real make-lane.py and
+    prepare-xctestrun.py (ad-hoc signing), with a fake xcodebuild that launches the copy's app and
+    leaves it running, as XCUITest does with the app of the last test."""
 
     def setUp(self):
         super().setUp()
         self.registers = True
-        self.app = os.path.join(self.root, "Debug", "Left.app")
-        self.exe = make_app(self.app, f"dev.xcuitestsim.selftest.{self.tag}")
-        self.xctestrun = os.path.join(self.root, "Fake.xctestrun")
+        self.products = os.path.join(self.root, "Products")
+        d = os.path.join(self.products, "Debug")
+        host = os.path.join(d, "Host.app")
+        make_app(host, f"dev.xcuitestsim.selftest.{self.tag}", compile_binary(self.root, "host"))
+        make_app(os.path.join(host, "Contents", "PlugIns", "Ext.appex"), f"dev.xcuitestsim.selftest.{self.tag}.ext")
+        runner = os.path.join(d, "UITests-Runner.app")
+        make_app(runner, f"dev.xcuitestsim.selftest.{self.tag}.runner")
+        make_app(os.path.join(runner, "Contents", "PlugIns", "UITests.xctest"), f"dev.xcuitestsim.selftest.{self.tag}.tests")
+        make_app(os.path.join(d, "Ext.appex"), f"dev.xcuitestsim.selftest.{self.tag}.ext")
+        for bundle in (host, runner, os.path.join(d, "Ext.appex")):
+            subprocess.run(["codesign", "-f", "-s", "-", "--deep", bundle], check=True, capture_output=True)
+        self.xctestrun = os.path.join(self.products, "Fake.xctestrun")
         with open(self.xctestrun, "wb") as f:
-            plistlib.dump({"TestConfigurations": []}, f)
+            plistlib.dump({"__xctestrun_metadata__": {"FormatVersion": 2}, "TestConfigurations": [{"TestTargets": [{
+                "IsUITestBundle": True, "UITargetAppPath": "__TESTROOT__/Debug/Host.app",
+                "TestHostPath": "__TESTROOT__/Debug/UITests-Runner.app",
+                "DependentProductPaths": ["__TESTROOT__/Debug/Host.app", "__TESTROOT__/Debug/Ext.appex",
+                                          "__TESTROOT__/Debug/UITests-Runner.app"]}]}]}, f)
         self.bin = os.path.join(self.root, "bin")
         os.makedirs(self.bin)
+        self.results = os.path.join(self.root, "results")
 
     def fake_xcodebuild(self, then):
         path = os.path.join(self.bin, "xcodebuild")
         with open(path, "w") as f:
-            f.write(f"#!/bin/sh\nnohup '{self.exe}' 600 >/dev/null 2>&1 &\n"
-                    f"'{hy.LSREGISTER}' -f '{self.app}'\n{then}\n")
+            f.write("#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -xctestrun ] && x=$2; shift; done\n"
+                    "app=$(dirname \"$x\")/Debug/Host.app\n"
+                    "nohup \"$app/Contents/MacOS/Host\" >/dev/null 2>&1 &\n"
+                    f"'{hy.LSREGISTER}' -f \"$app\"\n{then}\n")
         os.chmod(path, 0o755)
-        return dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"])
+        return dict(os.environ, PATH=self.bin + os.pathsep + os.environ["PATH"], XCUISIM_SIGN_IDENTITY="-",
+                    XCUISIM_RESULTS=self.results)
 
-    def lanes(self, env, name):
-        return subprocess.Popen([sys.executable, os.path.join(ROOT, "Scripts", "run-lanes.py"), "--name", name,
-                                 "--results", os.path.join(self.root, "results"), "--watch", "Left",
-                                 "--lane", self.xctestrun, "X/y"],
-                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def lanes(self, env, name, lanes=1):
+        cmd = [sys.executable, os.path.join(ROOT, "Scripts", "run-lanes.py"), "--name", name, "--results", self.results,
+               "--watch", "Host", "--products", self.products, "--identity", "-"]
+        for _ in range(lanes):
+            cmd += ["--lane", "X/y"]
+        return subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    def assert_clean(self, summary):
+    def run_dirs(self, name):
+        return glob.glob(os.path.join(hy.RUNS, f"{name}-*"))
+
+    def assert_disposed(self, summary, lanes):
         hygiene = summary["hygiene"]
-        self.assertEqual([p["path"] for p in hygiene["leftover_processes"]], [os.path.realpath(self.exe)])
+        copies = summary["copies"]
+        self.assertEqual(len(hygiene["leftover_processes"]), lanes)
+        for p in hygiene["leftover_processes"]:
+            self.assertTrue(p["path"].startswith(copies + os.sep), p)
         self.assertEqual(hygiene["still_running"], [])
         self.assertEqual(hygiene["still_registered"], {"launch_services": [], "pluginkit": []})
-        self.assertEqual(hy.processes([self.root]), [])
+        self.assertEqual(hygiene["deleted"], [copies])
+        self.assertFalse(os.path.exists(copies))
+        self.assertEqual(hy.runs_in_progress(), [])
 
-    def test_run_lanes_cleans_up_after_a_normal_end(self):
+    def test_run_lanes_makes_copies_without_extensions_and_deletes_them(self):
         env = self.fake_xcodebuild("exit 0")
-        proc = self.lanes(env, "normal")
-        out, err = proc.communicate(timeout=60)
+        proc = self.lanes(env, f"lanes-{self.tag}", lanes=2)
+        out, err = proc.communicate(timeout=180)
         self.assertEqual(proc.returncode, 0, err)
+        summary = load_json(os.path.join(self.results, f"lanes-{self.tag}.json"))
+        self.assert_disposed(summary, lanes=2)
         self.assertIn("leftover process of a copy", err)
-        self.assert_clean(load_json(os.path.join(self.root, "results", "normal.json")))
+        self.assertEqual(self.run_dirs(f"lanes-{self.tag}"), [])
+        # The source build is untouched; the copies never carried the extension.
+        self.assertTrue(os.path.isdir(os.path.join(self.products, "Debug", "Host.app", "Contents", "PlugIns", "Ext.appex")))
+        stale = [p for p in hy._ls_paths(None, thorough=True) if p.startswith(summary["copies"])]
+        self.assertEqual(stale, [], "no Launch Services record may point into the deleted copies")
 
-    def test_run_lanes_cleans_up_after_sigterm(self):
+    def test_run_lanes_disposes_copies_after_sigterm(self):
         env = self.fake_xcodebuild("sleep 600")
-        proc = self.lanes(env, "aborted")
-        deadline = time.time() + 20
-        while time.time() < deadline and not hy.processes([self.root]):
+        name = f"abort-{self.tag}"
+        proc = self.lanes(env, name)
+        deadline = time.time() + 120
+        while time.time() < deadline and not hy.runs_in_progress():
             time.sleep(0.2)
-        self.assertTrue(hy.processes([self.root]), "the fake run did not start")
+        self.assertTrue(hy.runs_in_progress(), "the fake run did not start")
         time.sleep(1)
         proc.send_signal(signal.SIGTERM)
-        out, err = proc.communicate(timeout=60)
+        out, err = proc.communicate(timeout=120)
         self.assertEqual(proc.returncode, 130, err)
-        summary = load_json(os.path.join(self.root, "results", "aborted.json"))
+        summary = load_json(os.path.join(self.results, f"{name}.json"))
         self.assertIn("interrupted", summary)
-        self.assert_clean(summary)
+        self.assert_disposed(summary, lanes=1)
 
-    def test_run_lanes_refuses_while_a_copy_process_is_alive(self):
-        busy = subprocess.Popen([self.exe, "60"])
+    def test_run_lanes_refuses_while_another_run_is_in_progress(self):
+        other = hy.new_run_dir(f"busy-{self.tag}")
+        self.addCleanup(lambda: hy.dispose([other]))
+        exe = make_app(os.path.join(other, "Busy.app"), f"dev.xcuitestsim.selftest.{self.tag}.busy")
+        busy = subprocess.Popen([exe, "60"])
         self.addCleanup(lambda: (busy.poll() is None and busy.kill(), busy.wait()))
         time.sleep(0.5)
-        proc = self.lanes(self.fake_xcodebuild("exit 0"), "busy")
+        proc = self.lanes(self.fake_xcodebuild("exit 0"), f"refused-{self.tag}")
         out, err = proc.communicate(timeout=60)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("preflight", err)
+        self.assertIn("another run is in progress", err)
         self.assertIsNone(busy.poll(), "a refused run must not kill another run's processes")
+        self.assertEqual(self.run_dirs(f"refused-{self.tag}"), [])
 
-    def test_run_offscreen_cleans_up_after_a_normal_end(self):
-        env = self.fake_xcodebuild("exit 0")
-        env["XCUISIM_RESULTS"] = os.path.join(self.root, "results")
-        result = subprocess.run([os.path.join(ROOT, "Scripts", "run-offscreen.sh"), "serial", self.xctestrun, "Left"],
-                                env=env, capture_output=True, text=True, timeout=60)
-        self.assertIn("serial: cleanup: LEFTOVER process", result.stdout)
-        self.assertEqual(hy.processes([self.root]), [])
-        self.assertEqual(hy.registrations([self.root]), {"launch_services": [], "pluginkit": []})
+    def offscreen(self, env, name, *extra):
+        return subprocess.Popen([os.path.join(ROOT, "Scripts", "run-offscreen.sh"), *extra, name, self.xctestrun, "Host"],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def test_run_offscreen_copies_prepares_and_deletes(self):
+        name = f"serial-{self.tag}"
+        proc = self.offscreen(self.fake_xcodebuild("exit 0"), name)
+        out, _ = proc.communicate(timeout=180)
+        self.assertIn(f"{name}: dispose: LEFTOVER process", out)
+        self.assertIn(f"{name}: xcodebuild exit 0", out)
+        self.assertIn("deleted " + hy.RUNS, out)
+        self.assertEqual(self.run_dirs(name), [])
+        self.assertEqual(hy.runs_in_progress(), [])
+
+    def test_run_offscreen_real_mode_strips_and_deletes(self):
+        name = f"real-{self.tag}"
+        env = self.fake_xcodebuild('test -e "$(dirname "$x")/Debug/Ext.appex" && echo "EXTENSION PRESENT"; exit 0')
+        proc = self.offscreen(env, name, "--real")
+        out, _ = proc.communicate(timeout=180)
+        self.assertIn(f"{name}: xcodebuild exit 0 after", out)
+        self.assertIn("(real)", out)
+        self.assertNotIn("EXTENSION PRESENT", out)
+        self.assertEqual(self.run_dirs(name), [])
+
+    def test_run_offscreen_disposes_after_sigterm(self):
+        name = f"serial-abort-{self.tag}"
+        proc = self.offscreen(self.fake_xcodebuild("sleep 600"), name)
+        deadline = time.time() + 120
+        while time.time() < deadline and not hy.runs_in_progress():
+            time.sleep(0.2)
+        self.assertTrue(hy.runs_in_progress(), "the fake run did not start")
+        time.sleep(1)
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=120)
+        self.assertIn(f"{name}: interrupted", out)
+        self.assertIn(f"{name}: dispose:", out)
+        self.assertEqual(self.run_dirs(name), [])
+        self.assertEqual(hy.runs_in_progress(), [])
+
+    def test_run_offscreen_refuses_an_offscreen_xctestrun(self):
+        result = subprocess.run([os.path.join(ROOT, "Scripts", "run-offscreen.sh"), "x",
+                                 self.xctestrun.replace(".xctestrun", "-offscreen.xctestrun"), "Host"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

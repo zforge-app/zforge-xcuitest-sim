@@ -12,6 +12,10 @@ Real (screen-taking) runs were authorized by the user and announced immediately 
   build is exactly that commit. The Zforge repository was only read.
 - Copied with rsync to `~/Library/Caches/dev.xcuitestsim/cmp-zf/src` and built once with
   `xcodebuild build-for-testing -scheme Zforge -testPlan UI-Full -configuration Debug` into `cmp-zf/dd`.
+  On 2026-11-01 the source copy and the comparison copies were deleted; the build's products are kept
+  as `~/Library/Caches/dev.xcuitestsim/builds/zforge-7ea66ec/Products` (Finder extension removed,
+  `Zforge.debug.dylib` SHA-256 still `da557f4a8d41b160`), the results moved to
+  `.local/results/cache-2026-11-01/cmp-zf/` (see `Notes/evidence-2026-11-01.md`).
   Nothing the runner or the app loads is under `~/Documents`.
 - The products were copied twice: `real/` unchanged, `sim/` prepared with `prepare-xctestrun.py`.
 - SHA-256 (first 16 hex): `Zforge` stub `adfe336008b7b00e`, `Zforge.debug.dylib` `da557f4a8d41b160`

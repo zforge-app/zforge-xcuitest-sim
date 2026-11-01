@@ -7,14 +7,16 @@ Real (screen-taking) runs were authorized by the user and announced immediately 
 ## Method
 
 - Four clean builds of `Sample/` (no agent, unmodified signatures) under
-  `~/Library/Caches/dev.xcuitestsim/cmp/dd-{base,hover,menu,focus}`; the three regression builds compile
+  `~/Library/Caches/dev.xcuitestsim/cmp/dd-{base,hover,menu,focus}` (deleted 2026-11-01; rebuilt with `Scripts/build-sample.sh`); the three regression builds compile
   `REGRESSION_HOVER`, `REGRESSION_MENU`, `REGRESSION_FOCUS` (the capabilities the agent emulates rather
   than merely delivers: tracking areas, menu bar, focus). The four app binaries differ (checked by hash).
 - Each build's products were copied; the original ran **real** (stock xctestrun: only Xcode's own
   `libRPAC`/`libMainThreadChecker` insertions, no shim, no agent), the copy was prepared with
   `prepare-xctestrun.py` and ran **simulated**. Same test sources, same app code.
 - Nothing the runner or app loads was under `~/Documents`; result bundles were written to
-  `~/Library/Caches/dev.xcuitestsim/cmp/results` (logs copied to `.local/results/2026-10-31/`).
+  `~/Library/Caches/dev.xcuitestsim/cmp/results`, moved on 2026-11-01 to
+  `.local/results/cache-2026-11-01/cmp/results/` (real references and the runs cited here; logs also in
+  `.local/results/2026-10-31/`; see `Notes/evidence-2026-11-01.md`).
 - Comparison: outcome per test, failing assertion line and message, duration, and the full XCTest
   activity tree per test from the result bundle (attachments ignored; pids, addresses, durations and
   timestamps normalized).

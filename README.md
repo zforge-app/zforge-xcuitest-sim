@@ -21,31 +21,27 @@ Work products go to `$XCUISIM_WORK` (default `~/Library/Caches/dev.xcuitestsim`)
 
 ```sh
 XCUISIM_SIGN_IDENTITY="Apple Development" Scripts/build-tools.sh
-XCUISIM_TEAM=<team> Scripts/build-sample.sh                         # prints the xctestrun path
-Scripts/prepare-xctestrun.py <xctestrun> --identity "Apple Development"   # writes <name>-offscreen.xctestrun
-Scripts/run-offscreen.sh <name> <offscreen.xctestrun> <app>,<runner> [-only-testing:...]
+XCUISIM_TEAM=<team> Scripts/build-sample.sh                         # prints the build's xctestrun path
+# simulated (offscreen) run on a throwaway copy of the build; --real for a real XCUITest run (takes the screen)
+Scripts/run-offscreen.sh [--real] <name> <build's xctestrun> <app>,<runner> [-only-testing:...]
 ```
 
-`prepare-xctestrun.py` modifies the built app in place (adds a weak load command for the agent and re-signs it); use it on a test build copy only. It refuses copies outside `$XCUISIM_WORK`.
+Runs never touch the build itself: each run copies the build products into `$XCUISIM_WORK/runs/<name>-<time>-<pid>`, prepares the copy there (`prepare-xctestrun.py`: weak load command for the agent, re-signing, offscreen xctestrun) and deletes it at the end. Build into `$XCUISIM_WORK` with `Scripts/build-for-testing.sh <derived data path> <xcodebuild args>`.
 
 ### Copies and the system
 
-Every build and copy the tool makes lives in `$XCUISIM_WORK` and is kept from leaking into the rest of the system (`Scripts/copy_hygiene.py`, `Notes/copy-hygiene-2026-11-01.md`):
+Copies and builds are kept from leaking into the rest of the system (`Scripts/copy_hygiene.py`, `Notes/copy-hygiene-2026-11-01.md`, `Notes/ephemeral-copies-2026-11-01.md`):
 
-- **No app extensions.** Copies keep the original bundle identifiers of their extensions, and the system can load a copy's extension instead of the developer's (a Finder Sync extension did). `prepare-xctestrun.py` and `Scripts/build-for-testing.sh` (use it for every `-derivedDataPath` build in the work directory) remove `Contents/PlugIns` and `Contents/Extensions` from the apps (test bundles stay) and loose extension products, re-sign, and prune the xctestruns. Tests that need an extension run in the real group, from the developer's own build.
-- **Registration.** `run-offscreen.sh` and `run-lanes.py` remove leftover Launch Services and pluginkit registrations of the copy before a run and unregister it after the run, also after an abort. macOS services (Spotlight, Finder, HIServices) re-register app bundles they already know within seconds to minutes; such a record has no extension, so it cannot take the place of the real one.
-- **Processes.** A run does not start while a process of the copy is alive; at the end (also on abort) leftover processes of the copy, such as the app XCUITest leaves running after the last test, are terminated and reported.
-- `copy_hygiene.py check|cleanup|strip [--thorough] <dir>` inspects or cleans any directory of the work directory; tests: `python3 -m unittest discover -s Tests -v` (the last test checks the whole work directory).
+- **No app extensions.** Copies keep the original bundle identifiers of their extensions, and the system can load a copy's extension instead of the developer's (a Finder Sync extension did). `build-for-testing.sh` and `prepare-xctestrun.py` remove `Contents/PlugIns` and `Contents/Extensions` from the apps (test bundles stay) and loose extension products, re-sign, and prune the xctestruns. Tests that need an extension run in the real group, from the developer's own build.
+- **Ephemeral copies.** `run-offscreen.sh` and `run-lanes.py` create their copies at the start of a run and, at the end (also after an abort), terminate and report leftover processes of the copies (such as the app XCUITest leaves running after the last test), unregister them from Launch Services and pluginkit and delete them. A launched copy kept on disk would be re-registered by macOS services (Spotlight, Finder, HIServices) later. A run does not start while another run's copies are in use. Builds made by `build-for-testing.sh` are unregistered after the build and never launched.
+- `copy_hygiene.py check|cleanup|strip|dispose [--thorough] <dir>` inspects or cleans any directory of the work directory; tests: `python3 -m unittest discover -s Tests -v` (the last test checks the whole work directory: no extension on disk, nothing registered, no process).
 
-Parallel lanes (prototype, see `Notes/zforge-parallel-lanes-2026-10-31.md`):
+Parallel lanes (prototype, see `Notes/zforge-parallel-lanes-2026-10-31.md`): one throwaway copy per lane (`make-lane.py`: distinct app and runner bundle IDs, optional app group rename), all lanes under one ScreenGuard, CPU and memory sampled.
 
 ```sh
-# one isolated copy per lane: distinct app and runner bundle IDs, optional app group rename
-Scripts/make-lane.py <products dir> <lane dir> --suffix lane2 --identity "Apple Development" \
-    [--app-group-suffix] [--plist-suffix-key <Info.plist key naming the app group>]
-# run lanes together under one ScreenGuard, sampling CPU and memory
-Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner> \
-    --lane <lane1 offscreen.xctestrun> <test id>,<test id> --lane <lane2 offscreen.xctestrun> <test id>
+Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner> --products <build products dir> \
+    [--identity "Apple Development"] [--app-group-suffix] [--plist-suffix-key <Info.plist key naming the app group>] \
+    --lane <test id>,<test id> --lane <test id>
 ```
 
 ## Planned parts

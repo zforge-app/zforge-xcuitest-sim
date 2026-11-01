@@ -8,7 +8,10 @@ Every real (screen-taking) run was announced immediately before it started and w
 
 - Zforge `7ea66ec470133c21025b53d7f64f6873c226a863`, working tree clean (checked with `git status`
   before starting); same build as `Notes/zforge-real-vs-simulated-2026-10-31.md`
-  (`~/Library/Caches/dev.xcuitestsim/cmp-zf/dd`). `Zforge.debug.dylib` SHA-256 `da557f4a8d41b160`
+  (`~/Library/Caches/dev.xcuitestsim/cmp-zf/dd`; since 2026-11-01 its products are
+  `~/Library/Caches/dev.xcuitestsim/builds/zforge-7ea66ec/Products`, Finder extension removed, same
+  `Zforge.debug.dylib`). Run results: `.local/results/cache-2026-11-01/cmp-zf/results-s1/` (see
+  `Notes/evidence-2026-11-01.md`). `Zforge.debug.dylib` SHA-256 `da557f4a8d41b160`
   in the real copy; the simulated copy has an identical `__text` section (weak agent load command and
   new signature only). The Zforge repository was only read.
 - Regression variants (one source line each, in copies of the copy): `zoomkey` (⌘= shortcut removed,

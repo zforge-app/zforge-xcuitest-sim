@@ -13,6 +13,8 @@ Usage: make-lane.py <products dir> <lane dir> --suffix lane2 --identity "Apple D
 import argparse, glob, os, plistlib, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "Scripts"))
+import copy_hygiene
 
 
 def entitlements(bundle):
@@ -59,9 +61,13 @@ def main():
     parser.add_argument("--plist-suffix-key", action="append", default=[])
     parser.add_argument("--env", action="append", default=[])
     args = parser.parse_args()
+    try:
+        copy_hygiene.copy_root(os.path.dirname(os.path.abspath(args.lane)))
+    except copy_hygiene.HygieneError as error:
+        sys.exit(f"{error}; lanes are copies of the tool")
     if os.path.exists(args.lane):
         shutil.rmtree(args.lane)
-    shutil.copytree(args.products, args.lane, symlinks=True)
+    copy_hygiene.clone_tree(args.products, args.lane)
     runs = [p for p in glob.glob(os.path.join(args.lane, "*.xctestrun")) if "-offscreen" not in p]
     if len(runs) != 1:
         sys.exit(f"expected one xctestrun in {args.lane}, found {runs}")

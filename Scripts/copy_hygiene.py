@@ -12,12 +12,17 @@ the app after the last test) keep it alive. This module:
   - lists and removes Launch Services and pluginkit registrations of everything inside a copy
     (`registrations`, `unregister`);
   - lists and terminates processes whose executable lives inside a copy (`processes`, `terminate`);
-  - combines them before a run (`preflight`) and after it (`cleanup`).
+  - combines them before a run (`preflight`) and after it (`cleanup`);
+  - makes copies ephemeral: `new_run_dir` and `clone_tree` create a run's copies under
+    $XCUISIM_WORK/runs, and `dispose` cleans them up and deletes them at the end of the run. A launched
+    copy left on disk is re-registered by macOS services (Spotlight, Finder, HIServices) at any time
+    afterwards; a deleted one cannot be.
 
 It only ever acts on directories inside $XCUISIM_WORK (default ~/Library/Caches/dev.xcuitestsim), so
 the developer's own build products (DerivedData) are never stripped, unregistered or killed.
 
-CLI: copy_hygiene.py preflight|cleanup|check|strip [--thorough] <copy dir or xctestrun>...
+CLI: copy_hygiene.py preflight|cleanup|check|strip|dispose [--thorough] <copy dir or xctestrun>...
+     dispose: cleanup, then delete the directories (refused while a process of them is alive)
      strip: strip_tree (and unregister) every directory given, e.g. right after a build
      check: report only (exit 1 when something is registered or running)
      --thorough: search the whole Launch Services database (slow), e.g. for deleted copies
@@ -32,8 +37,31 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/Laun
 PLUGIN_SUFFIXES = (".appex", ".plugin", ".qlgenerator", ".mdimporter", ".saver", ".systemextension")
 
 
+RUNS = os.path.join(WORK, "runs")
+
+
 class HygieneError(Exception):
     pass
+
+
+def new_run_dir(name):
+    """A fresh directory for one run's copies: $XCUISIM_WORK/runs/<name>-<time>-<pid>."""
+    path = os.path.join(RUNS, f"{re.sub(r'[^A-Za-z0-9._-]', '_', name)}-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}")
+    os.makedirs(path)
+    return path
+
+
+def runs_in_progress():
+    """Processes running from any run directory (another run is using its copies)."""
+    return processes([RUNS]) if os.path.isdir(RUNS) else []
+
+
+def clone_tree(source, destination):
+    """Copies a build products directory; APFS clones make it fast and nearly free."""
+    copy_root(os.path.dirname(destination))
+    if subprocess.run(["cp", "-Rc", source, destination], capture_output=True).returncode != 0:
+        shutil.rmtree(destination, ignore_errors=True)
+        shutil.copytree(source, destination, symlinks=True)
 
 
 def copy_root(path):
@@ -336,8 +364,45 @@ def cleanup(roots):
     return report
 
 
+def _bundles(roots):
+    found = []
+    for root in roots:
+        for directory, subdirs, _ in os.walk(root):
+            if directory.endswith((".app", ".appex", ".xctest")):
+                found.append(directory)
+            subdirs[:] = [d for d in subdirs if not d.endswith((".framework", ".dSYM", ".swiftmodule", ".noindex"))]
+    return found
+
+
+def dispose(roots):
+    """End of a run: cleanup (leftover processes terminated and reported, registrations removed), then
+    the copies are deleted. Nothing is deleted while a process of the copies is still alive (deleting a
+    running bundle can crash it in front of the user); `deleted` stays empty and `still_running` says why."""
+    roots = [copy_root(r) for r in roots]
+    report = cleanup(roots)
+    report["deleted"] = []
+    if report["still_running"]:
+        return report
+    bundles, identifiers = _bundles(roots), _bundle_identifiers(roots)
+    for root in roots:
+        if os.path.exists(root):
+            shutil.rmtree(root)
+            report["deleted"].append(root)
+    # macOS services can re-register a copy between the last check and the deletion; such a record
+    # would point at a missing bundle. Remove records by path, then check again by the identifiers the
+    # copies had (the final state, which is what `still_registered` reports).
+    for path in bundles:
+        subprocess.run([LSREGISTER, "-u", path], capture_output=True)
+    stale = sorted({p for i in identifiers for p in _ls_urls(i) if _inside(p, roots)})
+    for path in stale:
+        subprocess.run([LSREGISTER, "-u", path], capture_output=True)
+    report["still_registered"] = {"launch_services": sorted({p for i in identifiers for p in _ls_urls(i) if _inside(p, roots)}),
+                                  "pluginkit": sorted({p for p in _plugin_paths() if _inside(p, roots)})}
+    return report
+
+
 def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ("preflight", "cleanup", "check", "strip"):
+    if len(sys.argv) < 3 or sys.argv[1] not in ("preflight", "cleanup", "check", "strip", "dispose"):
         sys.exit(__doc__.split("CLI: ")[1])
     command, roots = sys.argv[1], sys.argv[2:]
     if command == "strip":
@@ -369,15 +434,16 @@ def main():
                     print(f"  unregistered ({kind}) {path}")
             return
         early = unregister(roots, thorough=True) if thorough else {"launch_services": [], "pluginkit": []}
-        report = cleanup(roots)
+        report = dispose(roots) if command == "dispose" else cleanup(roots)
         for kind in early:
             report["unregistered"][kind] = sorted(set(report["unregistered"][kind]) | set(early[kind]))
         for p in report["leftover_processes"]:
-            print(f"cleanup: LEFTOVER process {p['pid']} {p['path']} ({p['ended']})")
+            print(f"{command}: LEFTOVER process {p['pid']} {p['path']} ({p['ended']})")
         n = len(report["unregistered"]["launch_services"]) + len(report["unregistered"]["pluginkit"])
-        print(f"cleanup: {len(report['leftover_processes'])} leftover process(es), {n} registration(s) removed")
+        print(f"{command}: {len(report['leftover_processes'])} leftover process(es), {n} registration(s) removed"
+              + (f", deleted {', '.join(report['deleted']) or 'nothing'}" if command == "dispose" else ""))
         if report["still_running"] or report["still_registered"]["launch_services"] or report["still_registered"]["pluginkit"]:
-            print(f"cleanup: NOT CLEAN: {json.dumps({k: report[k] for k in ('still_running', 'still_registered')})}")
+            print(f"{command}: NOT CLEAN: {json.dumps({k: report[k] for k in ('still_running', 'still_registered')})}")
             sys.exit(1)
     except HygieneError as error:
         sys.exit(f"{command}: {error}")
