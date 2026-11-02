@@ -464,13 +464,38 @@ static BOOL XAIsOtherProcessMenuTrackingEvent(NSEvent *event) {
     return event.subtype == 0x4000;
 }
 
+// When another application becomes frontmost, LaunchServices notifies every application and AppKit's
+// _applicationDidSwitch dismisses the open menu (it calls -[NSMenuTrackingSession dismissAnimated:]
+// directly). A simulated app is never the real active app: the user's own app switches must not
+// close its menus. Every other dismissal (Escape, a click outside, choosing an item) goes through.
+static IMP gDismissAnimated;
+static NSUInteger gKeptMenusOpen;
+static void XADismissAnimated(id self, SEL _cmd, BOOL animated) {
+    Dl_info caller;
+    BOOL appSwitch = dladdr(__builtin_return_address(0), &caller) && caller.dli_sname && strstr(caller.dli_sname, "applicationDidSwitch");
+    if (getenv("XCUISIM_TRACE_MENU")) {
+        NSArray *stack = NSThread.callStackSymbols;
+        XAInfo(@"menu-trace dismissAnimated:%d app switch=%d\n%@", animated, appSwitch, [stack subarrayWithRange:NSMakeRange(1, MIN(8u, stack.count - 1))]);
+    }
+    if (appSwitch) {
+        if (++gKeptMenusOpen % 20 == 1) XAInfo(@"kept a menu open across a real application switch (%lu so far)", (unsigned long)gKeptMenusOpen);
+        return;
+    }
+    ((void (*)(id, SEL, BOOL))gDismissAnimated)(self, _cmd, animated);
+}
+
 // Every event loop (the main loop, nested tracking loops, menu tracking) dequeues through here.
 static IMP gNextEvent;
 static NSEvent *XANextEvent(NSApplication *self, SEL _cmd, NSEventMask mask, NSDate *until, NSRunLoopMode mode, BOOL dequeue) {
     static int traceOnly = -1;
     if (traceOnly < 0) traceOnly = getenv("XCUISIM_TRACE_POINTER") != NULL;
+    static int traceMenu = -1;
+    if (traceMenu < 0) traceMenu = getenv("XCUISIM_TRACE_MENU") != NULL;
     for (;;) {
         NSEvent *event = ((NSEvent *(*)(id, SEL, NSEventMask, NSDate *, NSRunLoopMode, BOOL))gNextEvent)(self, _cmd, mask, until, mode, dequeue);
+        if (traceMenu && event && gMenuTrackingDepth > 0 && !XAIsRealPointerEvent(event)) {
+            XAInfo(@"menu-trace dequeued %@ mode=%@ dequeue=%d", event, mode, dequeue);
+        }
         if (traceOnly) {
             if (event && (event.type == NSEventTypeAppKitDefined || event.type == NSEventTypeSystemDefined)) {
                 XAInfo(@"pointer-trace kitdefined type=%lu subtype=%d data1=%ld data2=%ld win=%ld mode=%@", (unsigned long)event.type, event.subtype,
@@ -1344,6 +1369,7 @@ static void XAInstall(void) {
     gSendEvent = XASwizzle(app, @selector(sendEvent:), (IMP)XASendEvent);
     gIsActive = XASwizzle(app, @selector(isActive), (IMP)XAIsActive);
     gNextEvent = XASwizzle(app, @selector(nextEventMatchingMask:untilDate:inMode:dequeue:), (IMP)XANextEvent);
+    gDismissAnimated = XASwizzle(NSClassFromString(@"NSMenuTrackingSession"), NSSelectorFromString(@"dismissAnimated:"), (IMP)XADismissAnimated);
     gDragUntilMouseUp = XASwizzle(NSClassFromString(@"NSCoreDragManager"), NSSelectorFromString(@"_dragUntilMouseUp:location:modifiers:"), (IMP)XADragUntilMouseUp);
     Class areaManager = NSClassFromString(@"_NSTrackingAreaAKManager");
     gUpdateMenuAreas = XASwizzle(areaManager, NSSelectorFromString(@"_updateMenuActiveTrackingAreasForWindowLocation:modifierFlags:"), (IMP)XAUpdateMenuAreas);
@@ -1388,6 +1414,17 @@ __attribute__((constructor)) static void XCUISimAgentInit(void) {
     [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
                                                   usingBlock:^(NSNotification *note) { gMenuTrackingDepth = MAX(gMenuTrackingDepth - 1, 0); }];
     if ([env[@"XCUISIM_DIAG"] isEqualToString:@"1"]) XAInstallDiagnostics();
+    if (getenv("XCUISIM_TRACE_MENU")) {
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
+                                                      usingBlock:^(NSNotification *note) {
+            NSArray *stack = NSThread.callStackSymbols;
+            XAInfo(@"menu-trace end tracking %@\n%@", [note.object title], [stack subarrayWithRange:NSMakeRange(1, MIN(24u, stack.count - 1))]);
+        }];
+        [[NSWorkspace sharedWorkspace].notificationCenter addObserverForName:NSWorkspaceDidActivateApplicationNotification object:nil queue:nil
+                                                                  usingBlock:^(NSNotification *note) {
+            XAInfo(@"menu-trace workspace activated %@ (menus open: %ld)", [note.userInfo[NSWorkspaceApplicationKey] bundleIdentifier], (long)gMenuTrackingDepth);
+        }];
+    }
     if ([env[@"XCUISIM_PORT"] length]) XAStartPort(env[@"XCUISIM_PORT"]);
     // Offscreen apps are candidates for App Nap and timer throttling.
     gActivity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
