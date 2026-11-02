@@ -75,6 +75,7 @@ def make_lanes(args, run_dir):
                "--suffix", f"lane{index}", "--identity", args.identity]
         cmd += ["--app-group-suffix"] if args.app_group_suffix else []
         cmd += sum((["--plist-suffix-key", k] for k in args.plist_suffix_key), [])
+        cmd += sum((["--env", e] for e in args.env), [])
         made = subprocess.run(cmd, capture_output=True, text=True)
         if made.returncode != 0:
             raise RuntimeError(f"make-lane.py failed for lane {index}: {made.stderr.strip()[-600:]}")
@@ -95,6 +96,8 @@ def main():
     parser.add_argument("--app-group-suffix", action="store_true")
     parser.add_argument("--plist-suffix-key", action="append", default=[])
     parser.add_argument("--keep-copies", action="store_true", help="diagnostics: unregister but do not delete")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                        help="extra environment of the test runners (repeat), e.g. XCUISIM_NO_AUTOMATION_MODE=1")
     parser.add_argument("--lane", action="append", required=True, metavar="TESTS")
     args = parser.parse_args()
     os.makedirs(args.results, exist_ok=True)

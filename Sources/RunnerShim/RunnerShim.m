@@ -57,6 +57,11 @@ static os_log_t XSLog(void) {
 - (void)_XCT_fetchAttributes:(NSArray *)attributes forElement:(id)element
                        reply:(void (^)(NSDictionary *, NSError *))reply;
 - (void)_XCT_requestElementAtPoint:(CGPoint)point reply:(void (^)(id, NSError *))reply;
+- (void)_XCT_enableAutomationModeWithReply:(void (^)(NSError *))reply;
+- (void)_XCT_loadAccessibilityWithTimeout:(double)timeout reply:(void (^)(BOOL, NSError *))reply;
+- (void)_XCT_registerForAXNotificationsForApplicationWithPID:(int)pid timeout:(double)timeout completion:(void (^)(BOOL, NSError *))completion;
+- (void)_XCT_unregisterForAXNotificationsForApplicationWithPID:(int)pid;
+- (void)_XCT_syncCrashReporterWithReply:(void (^)(BOOL, NSError *))reply;
 - (id)initWithUniformTypeIdentifier:(NSString *)uti compressionQuality:(double)quality;
 - (id)initWithScale:(double)scale;
 - (id)initWithData:(NSData *)data encodedIn:(id)encoding metadata:(id)metadata;
@@ -68,6 +73,7 @@ static NSString *gAgentPath;
 static BOOL gLogEvents;
 static BOOL gDropEvents;
 static NSMutableDictionary<NSString *, NSNumber *> *gSimulatedApps; // bundle ID -> pid
+static BOOL gNoAutomationMode; // spike: XCUISIM_NO_AUTOMATION_MODE=1
 static pid_t gLastPid;
 static NSUInteger gModifierFlags; // modifier state as the agent tracks it
 static NSUInteger gNextRequest;
@@ -238,7 +244,18 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
 
 @implementation XCUISimDaemonProxy
 
-- (id)forwardingTargetForSelector:(SEL)selector { return self.target; }
+// Every message that still reaches testmanagerd is logged with its running count: the inventory of
+// what a run without testmanagerd would have to answer (first 3 of each, then every 100th).
+- (id)forwardingTargetForSelector:(SEL)selector {
+    static NSCountedSet *seen;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSCountedSet set]; });
+    NSString *name = NSStringFromSelector(selector);
+    NSUInteger count;
+    @synchronized (seen) { [seen addObject:name]; count = [seen countForObject:name]; }
+    if (count <= 3 || count % 100 == 0) XSInfo(@"daemon message %@ #%lu", name, (unsigned long)count);
+    return self.target;
+}
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)selector { return [self.target methodSignatureForSelector:selector]; }
 - (void)forwardInvocation:(NSInvocation *)invocation { [invocation invokeWithTarget:self.target]; }
 - (BOOL)respondsToSelector:(SEL)selector { return [self.target respondsToSelector:selector]; }
@@ -299,6 +316,38 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
         id metadata = [[NSClassFromString(@"XCTImageMetadata") alloc] initWithScale:scale];
         reply([[NSClassFromString(@"XCTImage") alloc] initWithData:data encodedIn:encoding metadata:metadata], nil);
     }];
+}
+
+#pragma mark Without Automation Mode (spike, XCUISIM_NO_AUTOMATION_MODE=1)
+
+// testmanagerd turns macOS Automation Mode on for every session that asks for it or for accessibility.
+// With the spike switch on, these requests are answered here; everything else is still forwarded and
+// logged above, so a run shows what testmanagerd refuses without Automation Mode.
+- (void)_XCT_enableAutomationModeWithReply:(void (^)(NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_enableAutomationModeWithReply:reply]; return; }
+    XSInfo(@"no-automation-mode: enableAutomationMode answered locally");
+    reply(nil);
+}
+
+- (void)_XCT_loadAccessibilityWithTimeout:(double)timeout reply:(void (^)(BOOL, NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_loadAccessibilityWithTimeout:timeout reply:reply]; return; }
+    XSInfo(@"no-automation-mode: loadAccessibility answered locally");
+    reply(YES, nil);
+}
+
+- (void)_XCT_registerForAXNotificationsForApplicationWithPID:(int)pid timeout:(double)timeout completion:(void (^)(BOOL, NSError *))completion {
+    if (!gNoAutomationMode) { [self.target _XCT_registerForAXNotificationsForApplicationWithPID:pid timeout:timeout completion:completion]; return; }
+    XSInfo(@"no-automation-mode: registerForAXNotifications pid %d answered locally", pid);
+    completion(YES, nil);
+}
+
+- (void)_XCT_unregisterForAXNotificationsForApplicationWithPID:(int)pid {
+    if (!gNoAutomationMode) { [self.target _XCT_unregisterForAXNotificationsForApplicationWithPID:pid]; return; }
+}
+
+- (void)_XCT_syncCrashReporterWithReply:(void (^)(BOOL, NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_syncCrashReporterWithReply:reply]; return; }
+    reply(YES, nil);
 }
 
 - (void)_XCT_requestCurrentKeyboardModifierFlagsWithReply:(void (^)(NSUInteger, NSError *))reply {
@@ -443,6 +492,7 @@ __attribute__((constructor)) static void XCUISimRunnerShimInit(void) {
     if (!gAgentPath.length) return;
     gLogEvents = [env[@"XCUISIM_LOG_EVENTS"] isEqualToString:@"1"];
     gDropEvents = [env[@"XCUISIM_DROP_EVENTS"] isEqualToString:@"1"];
+    gNoAutomationMode = [env[@"XCUISIM_NO_AUTOMATION_MODE"] isEqualToString:@"1"];
     gSimulatedApps = [NSMutableDictionary dictionary];
     XSInfo(@"runner shim loaded in %@ (agent %@)", NSProcessInfo.processInfo.processName, gAgentPath);
     _dyld_register_func_for_add_image(XSImageAdded);
