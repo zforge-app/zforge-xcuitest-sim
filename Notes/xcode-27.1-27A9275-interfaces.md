@@ -138,3 +138,12 @@ on the app's main thread in every run loop mode, including menu tracking.
   outgoing notifications from the simulated app are still posted.
 - A locked console session (`IOConsoleUsers` → `CGSSessionScreenIsLocked`) leaves the app under test
   with an empty, disabled accessibility application element, in the simulated mode too.
+
+## Keyboard focus (added 2026-11-02)
+
+AppKit imports `CPSStealKeyFocusReturningID`, `CPSReleaseKeyFocusWithID`, `CPSGetKeyFocusProcess`; HIToolbox
+also `CPSStealKeyFocus`, `CPSReleaseKeyFocus` (CoreGraphics, re-exported from SkyLight `SLPS*`).
+`SLPSStealKeyFocusReturningID(int connection, uint32_t options, uint32_t *outID)` sends RPC
+`StealKeyFocusReturningID` and writes the ID on success; `SLPSReleaseKeyFocusWithID(uint32_t id)`.
+The caller becomes the window server's key thief (keyboard routed to it while another app is
+frontmost). The agent interposes all four; see `Notes/keyboard-focus-2026-11-02.md`.

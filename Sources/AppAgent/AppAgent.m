@@ -1096,6 +1096,63 @@ static void XADragUntilMouseUp(id self, SEL _cmd, id arg1, CGPoint location, NSU
     XAInfo(@"UNSUPPORTED: a drag-and-drop session started (window-server drag and drop is not simulated; run this test in the real mode)");
 }
 
+#pragma mark - Keyboard focus
+
+// Menu tracking (AppKit and HIToolbox) asks the window server for the keyboard with
+// CPSStealKeyFocus*: the process becomes the session's "key thief" and receives every key the user
+// types, even though another application stays frontmost (WindowServer log: "active key thief -
+// delivery manager destinations for kCGSEventKeyDown"). A simulated app gets its keys from the agent,
+// never from the window server, so the requests are answered in-process and never reach it.
+// Signatures from SkyLight's SLPS* implementations (macOS 27.0.1): Steal…ReturningID(connection,
+// options, uint32_t *outID) writes the ID that Release…WithID(id) later takes.
+typedef int32_t XACGError;
+extern XACGError CPSStealKeyFocusReturningID(uint64_t, uint64_t, uint32_t *);
+extern XACGError CPSReleaseKeyFocusWithID(uint64_t);
+extern XACGError CPSStealKeyFocus(uint64_t, uint64_t);
+extern XACGError CPSReleaseKeyFocus(uint64_t);
+
+static const uint32_t XAKeyFocusIDBase = 0x58530000; // "XS"; IDs handed out by the agent
+static _Atomic uint32_t gKeyFocusIDs;
+static _Atomic uint64_t gKeyFocusRequests;            // requests kept from the window server
+
+static void XANoteKeyFocusRequest(const char *call) {
+    uint64_t count = ++gKeyFocusRequests;
+    if (count <= 3 || count % 50 == 0) XAInfo(@"keyboard focus request kept in-process (%s, %llu so far)", call, count);
+}
+
+static XACGError XAStealKeyFocusReturningID(uint64_t connection, uint64_t options, uint32_t *outID) {
+    if (!gEnabled) return CPSStealKeyFocusReturningID(connection, options, outID);
+    XANoteKeyFocusRequest("StealKeyFocusReturningID");
+    if (outID) *outID = XAKeyFocusIDBase + (++gKeyFocusIDs & 0xffff);
+    return 0;
+}
+
+static XACGError XAReleaseKeyFocusWithID(uint64_t identifier) {
+    if (!gEnabled || ((uint32_t)identifier & 0xffff0000) != XAKeyFocusIDBase) return CPSReleaseKeyFocusWithID(identifier);
+    return 0;
+}
+
+static XACGError XAStealKeyFocus(uint64_t a, uint64_t b) {
+    if (!gEnabled) return CPSStealKeyFocus(a, b);
+    XANoteKeyFocusRequest("StealKeyFocus");
+    return 0;
+}
+
+static XACGError XAReleaseKeyFocus(uint64_t a) {
+    return gEnabled ? 0 : CPSReleaseKeyFocus(a);
+}
+
+// dyld interposing: the agent is loaded at launch (weak load command of the app's executable), so
+// every image's calls to these functions reach the replacements; the agent's own calls above reach
+// the originals.
+#define XA_INTERPOSE(replacement, original) \
+    __attribute__((used)) static const struct { const void *r; const void *o; } XAInterpose_##original \
+    __attribute__((section("__DATA,__interpose"))) = { (const void *)(uintptr_t)&replacement, (const void *)(uintptr_t)&original };
+XA_INTERPOSE(XAStealKeyFocusReturningID, CPSStealKeyFocusReturningID)
+XA_INTERPOSE(XAReleaseKeyFocusWithID, CPSReleaseKeyFocusWithID)
+XA_INTERPOSE(XAStealKeyFocus, CPSStealKeyFocus)
+XA_INTERPOSE(XAReleaseKeyFocus, CPSReleaseKeyFocus)
+
 #pragma mark - Installation
 
 static void XAInstall(void) {

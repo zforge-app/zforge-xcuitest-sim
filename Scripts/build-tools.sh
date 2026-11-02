@@ -11,7 +11,7 @@ mkdir -p $out
 identity=${XCUISIM_SIGN_IDENTITY:--}
 common=(-fobjc-arc -fmodules -Wall -Wno-unused-function -O1 -g -arch arm64 -mmacosx-version-min=26.0)
 clang $common -dynamiclib -framework AppKit -o $out/libXCUISimRunnerShim.dylib $root/Sources/RunnerShim/RunnerShim.m
-clang $common -dynamiclib -framework AppKit -framework Carbon -o $out/libXCUISimAgent.dylib $root/Sources/AppAgent/AppAgent.m
+clang $common -dynamiclib -framework AppKit -framework Carbon -framework CoreGraphics -o $out/libXCUISimAgent.dylib $root/Sources/AppAgent/AppAgent.m
 clang $common -framework AppKit -o $out/ScreenGuard $root/Tools/ScreenGuard/ScreenGuard.m
 codesign -f -s "$identity" $out/libXCUISimRunnerShim.dylib $out/libXCUISimAgent.dylib $out/ScreenGuard 2>&1 | grep -v "replacing existing signature" || true
 echo "built into $out"

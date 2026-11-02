@@ -53,6 +53,9 @@ Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner>
 
 ## Known limits
 
+- **Keyboard focus:** the agent keeps menu tracking's key-focus requests (`CPSStealKeyFocus*`) from reaching the window server, so a simulated app never takes the user's keyboard (`Notes/keyboard-focus-2026-11-02.md`). ScreenGuard does not watch keyboard focus; check the WindowServer log for `key thief updated`.
+- **Automation Mode:** queries, snapshots and launch monitoring still go through testmanagerd, which turns on macOS Automation Mode (and its indicator) for every run, offscreen included.
+
 Anything that leaves the app process cannot be simulated and stays in the real lane: Finder and other system apps, drag and drop through the window server, out-of-process open/save panels, permission dialogs. The interception relies on private Xcode protocols and can break with any Xcode release.
 
 It is generic for macOS apps built on AppKit (including SwiftUI). Zforge is the first consumer.
