@@ -29,7 +29,18 @@ def resign(bundle, identity, identifier, ents):
                     "--preserve-metadata=flags", "--entitlements", f.name, bundle], check=True, capture_output=True)
 
 
-def rename_bundle(bundle, suffix, identity, group_suffix, plist_keys):
+LOOKUP = "com.apple.security.temporary-exception.mach-lookup.global-name"
+GROUPS = "com.apple.security.application-groups"
+
+
+def port_name(app_ents, app_identifier, suffix):
+    """The agent's message port. A sandboxed app may only register names that start with one of its
+    app groups; the lane suffix keeps lanes apart even when they share a group."""
+    groups = app_ents.get(GROUPS) or []
+    return f"{groups[0] if groups else app_identifier}.xcuisim.{suffix}"
+
+
+def rename_bundle(bundle, suffix, identity, group_suffix, plist_keys, lookup=None, groups=None):
     info_path = os.path.join(bundle, "Contents", "Info.plist")
     with open(info_path, "rb") as f:
         info = plistlib.load(f)
@@ -45,10 +56,16 @@ def rename_bundle(bundle, suffix, identity, group_suffix, plist_keys):
     for key in ("com.apple.application-identifier", "application-identifier"):
         if key in ents and ents[key].endswith(old):
             ents[key] = ents[key][: -len(old)] + new
-    if group_suffix and "com.apple.security.application-groups" in ents:
-        ents["com.apple.security.application-groups"] = [f"{g}.{suffix}" for g in ents["com.apple.security.application-groups"]]
+    if group_suffix and GROUPS in ents:
+        ents[GROUPS] = [f"{g}.{suffix}" for g in ents[GROUPS]]
+    if lookup:
+        # The test runner reaches the agent's port directly, not through testmanagerd. launchd answers
+        # lookups of an app-group name only to members of that group, so the runner joins it too.
+        ents[LOOKUP] = list(dict.fromkeys(list(ents.get(LOOKUP, [])) + [lookup]))
+        if groups:
+            ents[GROUPS] = list(dict.fromkeys(list(ents.get(GROUPS, [])) + list(groups)))
     resign(bundle, identity, new, ents)
-    return old, new
+    return old, new, ents
 
 
 def main():
@@ -73,26 +90,32 @@ def main():
         sys.exit(f"expected one xctestrun in {args.lane}, found {runs}")
     with open(runs[0], "rb") as f:
         run = plistlib.load(f)
-    renamed = {}
+    renamed, ports = {}, []
     for config in run["TestConfigurations"]:
         for target in config["TestTargets"]:
             if not target.get("IsUITestBundle"):
                 continue
             app = target["UITargetAppPath"].replace("__TESTROOT__", args.lane)
             host = target["TestHostPath"].replace("__TESTROOT__", args.lane)
-            for bundle in (app, host):
-                if bundle not in renamed:
-                    renamed[bundle] = rename_bundle(bundle, args.suffix, args.identity,
-                                                    args.app_group_suffix and bundle == app, args.plist_suffix_key)
-            old_host, new_host = renamed[host]
+            if app not in renamed:
+                renamed[app] = rename_bundle(app, args.suffix, args.identity, args.app_group_suffix, args.plist_suffix_key)
+            port = port_name(renamed[app][2], renamed[app][1], args.suffix)
+            ports.append(port)
+            if host not in renamed:
+                renamed[host] = rename_bundle(host, args.suffix, args.identity, False, args.plist_suffix_key, lookup=port,
+                                              groups=renamed[app][2].get(GROUPS))
+            old_host, new_host = renamed[host][:2]
             target["TestHostBundleIdentifier"] = new_host
-            ids = {old: new for old, new in renamed.values()}
+            ids = {r[0]: r[1] for r in renamed.values()}
             target["BundleIdentifiersForCrashReportEmphasis"] = [ids.get(i, i) for i in target.get("BundleIdentifiersForCrashReportEmphasis", [])]
     with open(runs[0], "wb") as f:
         plistlib.dump(run, f)
-    for old, new in renamed.values():
+    for old, new, _ in renamed.values():
         print(f"{old} -> {new}")
-    env = sum((["--env", e] for e in args.env), [])
+    if len(set(ports)) > 1:
+        sys.exit(f"one UI target app per lane is supported, found ports {sorted(set(ports))}")
+    port_env = [f"XCUISIM_PORT={ports[0]}", f"XCUISIM_APP_PORT={ports[0]}"] if ports else []
+    env = sum((["--env", e] for e in port_env + args.env), [])
     subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "prepare-xctestrun.py"), runs[0],
                     "--identity", args.identity] + env, check=True)
 

@@ -119,6 +119,24 @@ class StripExtensionsTests(SelfTestDir):
                 paths = f.read().decode()
             self.assertNotIn("Ext.appex", paths, path)
             self.assertIn("UITests.xctest", paths, path)
+        with open(xctestrun.replace(".xctestrun", "-offscreen.xctestrun"), "rb") as f:
+            target = next(t for t in plistlib.load(f)["TestConfigurations"][0]["TestTargets"] if t.get("IsUITestBundle"))
+        self.assertEqual(target["PreferredScreenCaptureFormat"], "screenshots")
+        self.assertNotIn("SystemAttachmentLifetime", target, "the default mode keeps XCTest's attachment setting")
+
+    def test_prepare_without_automation_mode_never_keeps_system_screenshots(self):
+        d, run = self.build()
+        xctestrun = os.path.join(self.root, "Fake.xctestrun")
+        with open(xctestrun, "wb") as f:
+            plistlib.dump(run, f)
+        result = subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "prepare-xctestrun.py"), xctestrun,
+                                 "--identity", "-", "--env", "XCUISIM_NO_AUTOMATION_MODE=1"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(xctestrun.replace(".xctestrun", "-offscreen.xctestrun"), "rb") as f:
+            target = next(t for t in plistlib.load(f)["TestConfigurations"][0]["TestTargets"] if t.get("IsUITestBundle"))
+        # XCTest's automatic screenshots are taken by testmanagerd from the real screen.
+        self.assertEqual(target["SystemAttachmentLifetime"], "keepNever")
+        self.assertEqual(target["TestingEnvironmentVariables"]["XCUISIM_NO_AUTOMATION_MODE"], "1")
 
     def test_refuses_directories_outside_the_work_directory(self):
         outside = tempfile.mkdtemp()
@@ -373,6 +391,41 @@ class RunnerTests(SelfTestDir):
         self.assertEqual(hygiene["deleted"], [copies])
         self.assertFalse(os.path.exists(copies))
         self.assertEqual(hy.runs_in_progress(), [])
+
+    def make_lane(self, *extra):
+        lane = os.path.join(self.root, "lane")
+        result = subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "make-lane.py"), self.products, lane,
+                                 "--suffix", "lane1", "--identity", "-", *extra], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(glob.glob(os.path.join(lane, "*-offscreen.xctestrun"))[0], "rb") as f:
+            target = plistlib.load(f)["TestConfigurations"][0]["TestTargets"][0]
+        runner = os.path.join(lane, "Debug", "UITests-Runner.app")
+        ents = plistlib.loads(subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", runner],
+                                             capture_output=True, check=True).stdout or plistlib.dumps({}))
+        return target, ents
+
+    def test_make_lane_lets_the_runner_reach_the_agent_port(self):
+        target, ents = self.make_lane("--env", "XCUISIM_NO_AUTOMATION_MODE=1")
+        port = f"dev.xcuitestsim.selftest.{self.tag}.lane1.xcuisim.lane1"
+        env = target["TestingEnvironmentVariables"]
+        self.assertEqual((env["XCUISIM_PORT"], env["XCUISIM_APP_PORT"]), (port, port), "the runner and the app share the name")
+        self.assertIn(port, ents["com.apple.security.temporary-exception.mach-lookup.global-name"])
+        self.assertEqual(target["SystemAttachmentLifetime"], "keepNever")
+
+    def test_make_lane_names_the_port_after_the_app_group_and_adds_the_runner_to_it(self):
+        host = os.path.join(self.products, "Debug", "Host.app")
+        entitlements = os.path.join(self.root, "groups.plist")
+        with open(entitlements, "wb") as f:
+            plistlib.dump({"com.apple.security.application-groups": ["TEAM.dev.xcuitestsim.group"]}, f)
+        subprocess.run(["codesign", "-f", "-s", "-", "--entitlements", entitlements, host], check=True, capture_output=True)
+        target, ents = self.make_lane("--app-group-suffix")
+        # A sandboxed app may only register names that start with one of its app groups, and launchd
+        # answers lookups of such names only to members of the group.
+        port = "TEAM.dev.xcuitestsim.group.lane1.xcuisim.lane1"
+        self.assertEqual(target["TestingEnvironmentVariables"]["XCUISIM_PORT"], port)
+        self.assertIn(port, ents["com.apple.security.temporary-exception.mach-lookup.global-name"])
+        self.assertEqual(ents["com.apple.security.application-groups"], ["TEAM.dev.xcuitestsim.group.lane1"])
+        self.assertNotIn("SystemAttachmentLifetime", target)
 
     def test_run_lanes_makes_copies_without_extensions_and_deletes_them(self):
         env = self.fake_xcodebuild("exit 0")

@@ -87,3 +87,68 @@ come from inside the app, from Apple's own code.
 
 Risks: more private interfaces (XCTAutomationSupport classes and `XCTRunnerDaemonSession` methods); snapshot
 fidelity of local versus remote accessibility (the dual mode measures it); timing of idle waits.
+
+## Phase 2 — implemented (2026-11-02)
+
+Opt-in per run: `run-lanes.py --env XCUISIM_NO_AUTOMATION_MODE=1` (Zforge's `affected-tests.py` passes it
+by default). Without the switch nothing changes.
+
+- **Direct port.** `make-lane.py` names a port `<app group>.xcuisim.<lane>` (bundle identifier when the app
+  has no group), adds it to the runner copy's `temporary-exception.mach-lookup.global-name`, **adds the
+  runner copy to the app's group** (launchd answered `CFMessagePortCreateRemote` with nothing until the
+  runner was a member; no sandbox denial was logged), and passes `XCUISIM_PORT` / `XCUISIM_APP_PORT`. The
+  agent opens a `CFMessagePort` on a background queue; requests and replies are keyed archives.
+- **Engine.** The agent hosts XCTest's own engine (`XCTAutomationSession` over `XCTAccessibilityFramework
+  initForLocalAccess`). With local access every call **must run on the main thread**
+  (`XCTAccessibilityFrameworkAssertThreadRequirement`: when `allowsRemoteAccess` is NO it asserts
+  `isMainThread`); a call from the port queue aborted the app twice (crash dialogs at 08:39 and 08:42).
+  Calls now go through `dispatch_sync(main)` (the main queue drains in menu tracking too), and every
+  request is wrapped in `@try`, so an exception becomes an error reply instead of an abort.
+- **Shim, with the switch on:** `enableAutomationMode` / `enableAutomationModeWithError:`,
+  `loadAccessibility`, AX-notification (un)registration and `syncCrashReporter` answered locally;
+  `fetchSnapshotForElement` and `fetchAttributes` from the engine; `performWhenMenuOpens` from the agent's
+  `NSMenuDidBeginTrackingNotification` count or an open menu (XCTest arms the wait and sends the opening
+  click right after, so the menu may already be open when the baseline is read);
+  `notifyWhenEventLoopIsIdle` from the engine's run-loop and animation idle notifications; the agent
+  commands (deliver, status, hit, shot, activate) through the port; in-app automation sessions declined
+  (`requestUnsupportedBundleIdentifiersForAutomationSessions:` lists the simulated apps,
+  `requestAutomationSessionForTestTargetWithPID:…` replies with an error), so XCTest uses the snapshot
+  path. testmanagerd still carries the IDE transport and Launch Services monitoring (pid/state), which work
+  without Automation Mode. `SystemAttachmentLifetime` is `keepNever`: XCTest's automatic screenshots were
+  taken from the real screen.
+- **Hit testing.** XCTest compares the element at the hit point with the tree's element
+  (`-[XCAccessibilityElement isEqual:]`: pid, three identity fields, token). SwiftUI's `HostingScrollView`
+  answers `accessibilityHitTest:` with itself (also when asked again), so the hit landed on an ancestor:
+  8 of 16 tests failed `Not hittable`. The agent now takes the engine's tree below the AppKit result and
+  descends to the smallest element whose frame contains the point; elements built from the AppKit object
+  that accessibility exposes (e.g. `NSButtonCell`) have the same token as the tree's (probe
+  `Notes/probes/hitprobe.m`).
+
+### Evidence (Zforge)
+
+| Run | Build | Result | Automation Mode (1 s samples) |
+|---|---|---|---|
+| `noam-16b` | `zforge-7fe52d8` | 15/16; the failure is the Columns File ▸ Open race below | 175 × disabled |
+| `fo-noam`, `fo-default` | Zforge worktree with the test synchronized | 3/3 and 3/3 | `fo-noam` disabled |
+| `noam-16c` | same worktree | **16/16**, guard clean (0 front changes, 0 windows, 0 synthetic events), 170 s in 3 lanes | **174 × disabled** |
+| `noam-drop` (negative control, `XCUISIM_APP_DROP_EVENTS=1`) | same | 2/2 failed as they must | — |
+
+Activity trees of `noam-16b` against the real reference on the same build (`adopt-real-7fe52d8`), ignoring
+only the steps of XCTest's query path (`Setting up automation session`; `Requesting snapshot of
+accessibility hierarchy…`, `Find: …`): **8 identical**; 5 differ only by `Terminate io.libor.Zforge` at
+launch (lane versus serial order, accepted before) or real-only runtime warnings; one has an extra
+`Wait for accessibility to load`; `testViewModeIsPerWindow…` logs one `Unable to monitor event loop` (an
+idle wait without an answer; to watch); the Columns File ▸ Open test failed.
+
+**The Columns File ▸ Open race.** Without the ~0.2 s that automatic screenshots added to each step (`keepNever`,
+also in the default mode), `testFileOpenNavigatesSelectedFolderAndArchiveInColumnsMode` failed 3/3: its
+Left Arrow (meant to close the Open with submenu) moves to the app menu, as in the real run (where the Open
+item was `Not hittable` and XCTest's retry recovered it), and the next File ▸ Open click raced XCTest's
+menu traversal. Zforge's test now closes the menu with Escape and waits until no menu bar item is selected,
+as its List-mode sibling does; then 3/3 in each mode. `keepNever` stays limited to runs without Automation Mode.
+
+### Still open
+
+- The real-only tests (Finder, window-server drag and drop, out-of-process panels) still need Automation Mode.
+- `Unable to monitor event loop` once in 16 tests: see whether the idle request timed out or the app was quitting.
+- A test's failure screenshots now come only from the test's own `screenshot()` calls (automatic ones are off).

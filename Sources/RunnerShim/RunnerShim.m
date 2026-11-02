@@ -62,6 +62,11 @@ static os_log_t XSLog(void) {
 - (void)_XCT_registerForAXNotificationsForApplicationWithPID:(int)pid timeout:(double)timeout completion:(void (^)(BOOL, NSError *))completion;
 - (void)_XCT_unregisterForAXNotificationsForApplicationWithPID:(int)pid;
 - (void)_XCT_syncCrashReporterWithReply:(void (^)(BOOL, NSError *))reply;
+- (void)_XCT_fetchSnapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters reply:(void (^)(id, NSError *))reply;
+- (void)_XCT_performWhenMenuOpens:(id)element block:(void (^)(void))block;
+- (void)_XCT_notifyWhenEventLoopIsIdleForApplicationWithPID:(int)pid reply:(void (^)(NSError *))reply;
+- (void)_XCT_requestScreenshotAttachment:(id)request withReply:(void (^)(id, NSError *))reply;
+- (id)initWithRootElementSnapshot:(id)snapshot runtimeIssues:(id)issues;
 - (id)initWithUniformTypeIdentifier:(NSString *)uti compressionQuality:(double)quality;
 - (id)initWithScale:(double)scale;
 - (id)initWithData:(NSData *)data encodedIn:(id)encoding metadata:(id)metadata;
@@ -127,14 +132,86 @@ static NSData *XSSerializeRecord(id record) {
 
 #pragma mark - Channel to the app agent
 
-// The channel is a custom accessibility attribute of the application element, read through
+// Default channel: a custom accessibility attribute of the application element, read through
 // testmanagerd's own attribute fetch. It needs no extra entitlement in either sandbox and is
 // serviced by the app's main thread in every run loop mode, including menu tracking.
+// Without Automation Mode (XCUISIM_NO_AUTOMATION_MODE=1) testmanagerd refuses that fetch, so the
+// shim talks to the agent's CFMessagePort (XCUISIM_PORT, an app-group name the lane's runner may look
+// up) with keyed archives of dictionaries.
+
+static NSString *gPortName;
+
+static NSData *XSArchive(id object) {
+    return [NSKeyedArchiver archivedDataWithRootObject:object requiringSecureCoding:NO error:nil];
+}
+
+static id XSUnarchive(NSData *data) {
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
+    unarchiver.requiresSecureCoding = NO;
+    return [unarchiver decodeObjectForKey:NSKeyedArchiveRootObjectKey];
+}
+
+// Synchronous request to the agent's port. A relaunched app registers a new port under the same name,
+// so an invalid port is looked up again.
+static NSDictionary *XSPortSend(NSDictionary *request, CFTimeInterval timeout) {
+    static CFMessagePortRef port;
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("dev.xcuitestsim.runner.port", DISPATCH_QUEUE_SERIAL); });
+    __block NSDictionary *reply;
+    dispatch_sync(queue, ^{
+        NSData *data = XSArchive(request);
+        for (int attempt = 0; attempt < 2 && !reply; attempt++) {
+            if (port && !CFMessagePortIsValid(port)) { CFRelease(port); port = NULL; }
+            if (!port) port = CFMessagePortCreateRemote(NULL, (__bridge CFStringRef)gPortName);
+            if (!port) { reply = @{@"error": [NSString stringWithFormat:@"The app agent's port %@ is not available", gPortName]}; break; }
+            CFDataRef out = NULL;
+            SInt32 status = CFMessagePortSendRequest(port, 0, (__bridge CFDataRef)data, timeout, timeout, kCFRunLoopDefaultMode, &out);
+            if (status == kCFMessagePortSuccess && out) {
+                id value = XSUnarchive((__bridge_transfer NSData *)out);
+                reply = [value isKindOfClass:[NSDictionary class]] ? value : @{@"error": @"malformed reply from the app agent"};
+            } else if (status == kCFMessagePortIsInvalid || status == kCFMessagePortTransportError) {
+                CFRelease(port); port = NULL;
+            } else {
+                reply = @{@"error": [NSString stringWithFormat:@"The app agent did not answer %@ (status %d)", request[@"op"], (int)status]};
+            }
+        }
+        if (!reply) reply = @{@"error": @"The app agent's port is not valid"};
+    });
+    return reply;
+}
+
+static NSError *XSReplyError(NSDictionary *reply) {
+    if (!reply[@"error"]) return nil;
+    id original = reply[@"nserror"];
+    return [original isKindOfClass:[NSError class]] ? original : XSError(reply[@"error"]);
+}
+
+// Reads agent commands (attribute names without the XCUISim: prefix) through the active channel.
+static void XSFetchFromAgent(id daemon, pid_t pid, NSArray<NSString *> *commands, void (^reply)(NSDictionary *, NSError *)) {
+    if (gNoAutomationMode && gPortName.length) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSDictionary *answer = XSPortSend(@{@"op": @"commands", @"commands": commands}, 30);
+            reply(answer[@"values"], XSReplyError(answer));
+        });
+        return;
+    }
+    NSMutableArray *attributes = [NSMutableArray array];
+    for (NSString *command in commands) [attributes addObject:[@"XCUISim:" stringByAppendingString:command]];
+    id element = [NSClassFromString(@"XCAccessibilityElement") elementWithProcessIdentifier:pid];
+    [daemon _XCT_fetchAttributes:attributes forElement:element reply:^(NSDictionary *values, NSError *error) {
+        NSMutableDictionary *byCommand = [NSMutableDictionary dictionary];
+        for (NSString *command in commands) {
+            id value = values[[@"XCUISim:" stringByAppendingString:command]];
+            if (value) byCommand[command] = value;
+        }
+        reply(byCommand, error);
+    }];
+}
+
 static void XSAgentRequest(id daemon, pid_t pid, NSString *command, void (^reply)(NSString *, NSError *)) {
-    Class elementClass = NSClassFromString(@"XCAccessibilityElement");
-    id element = [elementClass elementWithProcessIdentifier:pid];
-    NSString *attribute = [@"XCUISim:" stringByAppendingString:command];
-    [daemon _XCT_fetchAttributes:@[attribute] forElement:element reply:^(NSDictionary *values, NSError *error) {
+    NSString *attribute = command;
+    XSFetchFromAgent(daemon, pid, @[command], ^(NSDictionary *values, NSError *error) {
         id value = values[attribute];
         if (error || ![value isKindOfClass:[NSString class]]) {
             reply(nil, error ?: XSError([NSString stringWithFormat:@"The app agent did not answer %@ (got %@)",
@@ -142,7 +219,7 @@ static void XSAgentRequest(id daemon, pid_t pid, NSString *command, void (^reply
             return;
         }
         reply(value, nil);
-    }];
+    });
 }
 
 static pid_t XSTargetPid(id record) {
@@ -289,14 +366,13 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
     pid_t pid = gLastPid;
     if (pid <= 0) { [self.target _XCT_requestElementAtPoint:point reply:reply]; return; }
     Class elementClass = NSClassFromString(@"XCAccessibilityElement");
-    id app = [elementClass elementWithProcessIdentifier:pid];
-    NSString *attribute = [NSString stringWithFormat:@"XCUISim:hit:%.3f:%.3f", point.x, point.y];
-    [self.target _XCT_fetchAttributes:@[attribute] forElement:app reply:^(NSDictionary *values, NSError *error) {
+    NSString *attribute = [NSString stringWithFormat:@"hit:%.3f:%.3f", point.x, point.y];
+    XSFetchFromAgent(self.target, pid, @[attribute], ^(NSDictionary *values, NSError *error) {
         id element = values[attribute];
         if ([element isKindOfClass:elementClass]) { reply(element, nil); return; }
         XSInfo(@"hit test at %@ found nothing in the app (%@ %@)", NSStringFromPoint(point), element, error);
         reply(nil, error ?: XSError(@"No element at point"));
-    }];
+    });
 }
 
 // Screenshots come from the app's own windows; the real screen shows the user's work, not the app.
@@ -305,17 +381,16 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
     if (pid <= 0) { reply(nil, XSError(@"No simulated application for the screenshot")); return; }
     CGRect rect = [[request valueForKey:@"rect"] rectValue];
     if (CGRectIsNull(rect) || CGRectIsInfinite(rect)) rect = CGRectZero;
-    NSString *shot = [NSString stringWithFormat:@"XCUISim:shot:%.3f:%.3f:%.3f:%.3f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height];
-    id app = [NSClassFromString(@"XCAccessibilityElement") elementWithProcessIdentifier:pid];
-    [self.target _XCT_fetchAttributes:@[@"XCUISim:scale", shot] forElement:app reply:^(NSDictionary *values, NSError *error) {
+    NSString *shot = [NSString stringWithFormat:@"shot:%.3f:%.3f:%.3f:%.3f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height];
+    XSFetchFromAgent(self.target, pid, @[@"scale", shot], ^(NSDictionary *values, NSError *error) {
         id value = values[shot];
         NSData *data = [value isKindOfClass:[NSString class]] ? [[NSData alloc] initWithBase64EncodedString:value options:0] : nil;
         if (error || !data) { XSInfo(@"screenshot failed: %@ %@", values[shot], error); reply(nil, error ?: XSError(@"Screenshot failed")); return; }
-        double scale = [values[@"XCUISim:scale"] doubleValue] ?: 2;
+        double scale = [values[@"scale"] doubleValue] ?: 2;
         id encoding = [[NSClassFromString(@"XCTImageEncoding") alloc] initWithUniformTypeIdentifier:@"public.png" compressionQuality:1.0];
         id metadata = [[NSClassFromString(@"XCTImageMetadata") alloc] initWithScale:scale];
         reply([[NSClassFromString(@"XCTImage") alloc] initWithData:data encodedIn:encoding metadata:metadata], nil);
-    }];
+    });
 }
 
 #pragma mark Without Automation Mode (spike, XCUISIM_NO_AUTOMATION_MODE=1)
@@ -348,6 +423,61 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
 - (void)_XCT_syncCrashReporterWithReply:(void (^)(BOOL, NSError *))reply {
     if (!gNoAutomationMode) { [self.target _XCT_syncCrashReporterWithReply:reply]; return; }
     reply(YES, nil);
+}
+
+// The element tree and attributes come from XCTest's in-app engine through the agent's port.
+- (void)_XCT_fetchSnapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters
+                               reply:(void (^)(id, NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_fetchSnapshotForElement:element attributes:attributes parameters:parameters reply:reply]; return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableDictionary *request = [@{@"op": @"snapshot", @"element": element, @"attributes": attributes ?: @[]} mutableCopy];
+        if (parameters) request[@"parameters"] = parameters;
+        NSDictionary *answer = XSPortSend(request, 60);
+        NSError *error = XSReplyError(answer);
+        if (error) { XSInfo(@"snapshot failed: %@", error); reply(nil, error); return; }
+        reply([[NSClassFromString(@"XCUIElementSnapshotRequestResult") alloc] initWithRootElementSnapshot:answer[@"result"] runtimeIssues:nil], nil);
+    });
+}
+
+- (void)_XCT_fetchAttributes:(NSArray *)attributes forElement:(id)element reply:(void (^)(NSDictionary *, NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_fetchAttributes:attributes forElement:element reply:reply]; return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSDictionary *answer = XSPortSend(@{@"op": @"attributes", @"element": element, @"attributes": attributes ?: @[]}, 30);
+        NSError *error = XSReplyError(answer);
+        if (error) XSInfo(@"attributes %@ failed: %@", attributes, error);
+        reply(error ? nil : answer[@"result"], error);
+    });
+}
+
+// testmanagerd calls the block when its accessibility observer sees the menu open; the agent counts
+// NSMenuDidBeginTrackingNotification instead.
+- (void)_XCT_performWhenMenuOpens:(id)element block:(void (^)(void))block {
+    if (!gNoAutomationMode) { [self.target _XCT_performWhenMenuOpens:element block:block]; return; }
+    // XCTest arms the wait and synthesizes the click that opens the menu right after it, so the menu
+    // may already be open when the baseline is read: an open menu satisfies the wait as well.
+    NSNumber *baseline = XSPortSend(@{@"op": @"menuOpenings"}, 5)[@"result"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + 30;
+        while (CFAbsoluteTimeGetCurrent() < deadline) {
+            NSDictionary *now = XSPortSend(@{@"op": @"menuOpenings"}, 5);
+            BOOL opened = baseline && [now[@"result"] unsignedLongLongValue] > baseline.unsignedLongLongValue;
+            if (opened || [now[@"open"] boolValue]) { block(); return; }
+            usleep(20000);
+        }
+        XSInfo(@"no menu opened within 30 s");
+    });
+}
+
+- (void)_XCT_notifyWhenEventLoopIsIdleForApplicationWithPID:(int)pid reply:(void (^)(NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_notifyWhenEventLoopIsIdleForApplicationWithPID:pid reply:reply]; return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ reply(XSReplyError(XSPortSend(@{@"op": @"idle"}, 70))); });
+}
+
+// Automatic screenshots would be taken from the real screen; offscreen runs set
+// SystemAttachmentLifetime to keepNever, so this is only a guard.
+- (void)_XCT_requestScreenshotAttachment:(id)request withReply:(void (^)(id, NSError *))reply {
+    if (!gNoAutomationMode) { [self.target _XCT_requestScreenshotAttachment:request withReply:reply]; return; }
+    reply(nil, XSError(@"Screenshots of the real screen are disabled offscreen"));
 }
 
 - (void)_XCT_requestCurrentKeyboardModifierFlagsWithReply:(void (^)(NSUInteger, NSError *))reply {
@@ -433,6 +563,23 @@ static void XSLaunchUsingPlatform(id self, SEL _cmd, NSArray *arguments, NSDicti
     ((void (*)(id, SEL, NSArray *, NSDictionary *, NSURL *))gOriginalLaunchUsingPlatform)(self, _cmd, arguments, XSSimulatedEnvironment(self, environment), url);
 }
 
+// Without Automation Mode the in-app automation session (brokered by testmanagerd, which turns
+// Automation Mode on for it) is declined; XCTest then uses the snapshot path the shim answers.
+static void XSUnsupportedBundleIdentifiers(id self, SEL _cmd, void (^reply)(NSSet *, NSError *)) {
+    __block NSSet *ids;
+    dispatch_sync(XSQueue(), ^{ ids = [NSSet setWithArray:gSimulatedApps.allKeys]; });
+    XSInfo(@"no-automation-mode: in-app automation sessions declined for %@", ids);
+    reply(ids, nil);
+}
+static void XSRequestAutomationSession(id self, SEL _cmd, int pid, NSString *path, void (^reply)(id, NSError *)) {
+    XSInfo(@"no-automation-mode: in-app automation session for pid %d declined", pid);
+    reply(nil, XSError(@"In-app automation sessions are not used without Automation Mode"));
+}
+static BOOL XSEnableAutomationModeWithError(id self, SEL _cmd, NSError **error) {
+    XSInfo(@"no-automation-mode: enableAutomationModeWithError answered locally");
+    return YES;
+}
+
 static BOOL XSSwizzle(Class cls, SEL selector, IMP replacement, IMP *original) {
     Method method = class_getInstanceMethod(cls, selector);
     if (!method) return NO;
@@ -450,6 +597,12 @@ static void XSInstallIfPossible(void) {
     BOOL ok = XSSwizzle(session, NSSelectorFromString(@"daemonProxy"), (IMP)XSDaemonProxy, &gOriginalDaemonProxy);
     ok &= XSSwizzle(session, NSSelectorFromString(@"_XCT_applicationDidUpdateState:"), (IMP)XSApplicationDidUpdateState, &gOriginalStateUpdate);
     ok &= XSSwizzle(session, NSSelectorFromString(@"_XCT_applicationWithBundleID:didUpdatePID:andState:"), (IMP)XSApplicationDidUpdatePID, &gOriginalPidUpdate);
+    if (gNoAutomationMode) {
+        IMP unused;
+        ok &= XSSwizzle(session, NSSelectorFromString(@"requestUnsupportedBundleIdentifiersForAutomationSessions:"), (IMP)XSUnsupportedBundleIdentifiers, &unused);
+        ok &= XSSwizzle(session, NSSelectorFromString(@"requestAutomationSessionForTestTargetWithPID:preferredBackendPath:reply:"), (IMP)XSRequestAutomationSession, &unused);
+        ok &= XSSwizzle(session, NSSelectorFromString(@"enableAutomationModeWithError:"), (IMP)XSEnableAutomationModeWithError, &unused);
+    }
     XSInfo(@"installed on XCTRunnerDaemonSession: %@", ok ? @"yes" : @"PARTIAL");
 }
 
@@ -493,6 +646,7 @@ __attribute__((constructor)) static void XCUISimRunnerShimInit(void) {
     gLogEvents = [env[@"XCUISIM_LOG_EVENTS"] isEqualToString:@"1"];
     gDropEvents = [env[@"XCUISIM_DROP_EVENTS"] isEqualToString:@"1"];
     gNoAutomationMode = [env[@"XCUISIM_NO_AUTOMATION_MODE"] isEqualToString:@"1"];
+    gPortName = env[@"XCUISIM_PORT"];
     gSimulatedApps = [NSMutableDictionary dictionary];
     XSInfo(@"runner shim loaded in %@ (agent %@)", NSProcessInfo.processInfo.processName, gAgentPath);
     _dyld_register_func_for_add_image(XSImageAdded);

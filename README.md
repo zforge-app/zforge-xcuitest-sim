@@ -54,7 +54,7 @@ Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner>
 ## Known limits
 
 - **Keyboard focus:** the agent keeps menu tracking's key-focus requests (`CPSStealKeyFocus*`) from reaching the window server, so a simulated app never takes the user's keyboard (`Notes/keyboard-focus-2026-11-02.md`). ScreenGuard does not watch keyboard focus; check the WindowServer log for `key thief updated`.
-- **Automation Mode:** queries, snapshots and launch monitoring still go through testmanagerd, which turns on macOS Automation Mode (and its indicator) for every run, offscreen included.
+- **Automation Mode:** by default, queries and snapshots go through testmanagerd, which turns on macOS Automation Mode (its indicator and, after a while, an authentication prompt). With `run-lanes.py --env XCUISIM_NO_AUTOMATION_MODE=1` the agent answers them from XCTest's own in-app engine through a direct port, and Automation Mode stays off (`Notes/no-automation-mode-spike-2026-11-02.md`); real-only tests still need it.
 
 Anything that leaves the app process cannot be simulated and stays in the real lane: Finder and other system apps, drag and drop through the window server, out-of-process open/save panels, permission dialogs. The interception relies on private Xcode protocols and can break with any Xcode release.
 

@@ -18,6 +18,7 @@
 #import <Carbon/Carbon.h>
 #import <objc/runtime.h>
 #import <os/log.h>
+#import <dlfcn.h>
 
 static os_log_t XALog(void) {
     static os_log_t log;
@@ -1000,6 +1001,188 @@ static id XAAttributeValue(NSApplication *self, SEL _cmd, NSString *attribute) {
     return ((id (*)(id, SEL, NSString *))gAttributeValue)(self, _cmd, attribute);
 }
 
+#pragma mark - Direct port (no testmanagerd)
+
+// With XCUISIM_PORT set, the runner shim talks to the agent through a CFMessagePort instead of
+// accessibility attributes fetched through testmanagerd, and the element tree, attributes and idle
+// waits come from XCTest's own in-app engine (XCTAutomationSupport's XCTAutomationSession with local
+// accessibility), which needs neither testmanagerd nor Automation Mode
+// (Notes/no-automation-mode-spike-2026-11-02.md). Requests and replies are keyed archives of
+// dictionaries; requests are served on a background queue so the main thread stays free to answer
+// the in-process accessibility queries the engine makes.
+
+extern AXUIElementRef NSAccessibilityCreateAXUIElementRef(id element);
+
+@interface NSObject (XAEngine)
+- (id)initForLocalAccess;
+- (id)initWithAccessibilityFramework:(id)framework;
+- (id)snapshotForElement:(id)element attributes:(NSArray *)attributes parameters:(NSDictionary *)parameters
+         timeoutControls:(id)controls error:(NSError **)error;
+- (NSDictionary *)attributesForElement:(id)element attributes:(NSArray *)attributes error:(NSError **)error;
+- (void)notifyWhenMainRunLoopIsIdle:(void (^)(void))block;
+- (void)notifyWhenAnimationsAreIdle:(void (^)(void))block;
++ (id)elementWithAXUIElement:(AXUIElementRef)element;
+@end
+
+static CFMessagePortRef gPort;
+static id gEngine;
+static _Atomic uint64_t gMenuOpenings; // NSMenuDidBeginTrackingNotification count
+
+static id XAEngine(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (!dlopen("/System/Library/PrivateFrameworks/XCTAutomationSupport.framework/Versions/A/XCTAutomationSupport", RTLD_NOW)) {
+            XAInfo(@"port: XCTAutomationSupport did not load: %s", dlerror());
+            return;
+        }
+        id framework = [[NSClassFromString(@"XCTAccessibilityFramework") alloc] initForLocalAccess];
+        gEngine = [[NSClassFromString(@"XCTAutomationSession") alloc] initWithAccessibilityFramework:framework];
+        XAInfo(@"port: local automation engine %@", gEngine ? @"ready" : @"missing");
+    });
+    return gEngine;
+}
+
+static NSData *XAArchive(id object) {
+    NSError *error;
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:object requiringSecureCoding:NO error:&error];
+    if (!data) XAInfo(@"port: archive failed: %@", error);
+    return data;
+}
+
+static id XAUnarchive(NSData *data) {
+    NSError *error;
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:&error];
+    unarchiver.requiresSecureCoding = NO;
+    id object = [unarchiver decodeObjectForKey:NSKeyedArchiveRootObjectKey];
+    if (!object) XAInfo(@"port: unarchive failed: %@", error ?: unarchiver.error);
+    return object;
+}
+
+// SwiftUI hosting views answer accessibilityHitTest: with themselves, so a hit test that stops at the
+// AppKit object lands on an ancestor of the element XCTest targets ("Not hittable"). The engine's own
+// tree (the one XCTest queries) is used to finish it: from the AppKit object, descend to the most
+// specific descendant whose frame contains the point (XCTest coordinates, top-left origin).
+static id XAEngine(void);
+static id XADeepestAtPoint(id root, CGPoint point) {
+    id engine = XAEngine();
+    if (!engine) return root;
+    NSError *error;
+    id snapshot = [engine snapshotForElement:root attributes:@[@"XC_kAXXCAttributeElementType", @"AXFrame", @"XC_kAXXCAttributeChildren"]
+                                  parameters:@{} timeoutControls:nil error:&error];
+    if (!snapshot) { XAInfo(@"hit test: no snapshot below %@ (%@)", root, error); return root; }
+    id node = snapshot;
+    for (int depth = 0; depth < 128; depth++) {
+        id best = nil;
+        CGFloat bestArea = CGFLOAT_MAX;
+        for (id child in [node valueForKey:@"children"]) {
+            CGRect frame = [[child valueForKey:@"frame"] rectValue];
+            CGFloat area = frame.size.width * frame.size.height;
+            if (area > 0 && CGRectContainsPoint(frame, point) && area <= bestArea) { best = child; bestArea = area; }
+        }
+        if (!best) break;
+        node = best;
+    }
+    id element = [node valueForKey:@"accessibilityElement"];
+    return element ?: root;
+}
+
+// Runs a command of the attribute channel on the main thread; accessibility objects (hit tests) are
+// returned as XCTest elements, as testmanagerd would hand them over.
+static id XAPortCommand(NSString *command) {
+    __block id value;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      @try {
+        value = XAHandleCommand(command);
+        if (value && ![value isKindOfClass:[NSString class]]) {
+            AXUIElementRef ref = NSAccessibilityCreateAXUIElementRef(value);
+            value = ref ? [NSClassFromString(@"XCAccessibilityElement") elementWithAXUIElement:ref] : @"none";
+            if (ref) CFRelease(ref);
+            if ([command hasPrefix:@"hit:"] && ref) {
+                NSArray *parts = [command componentsSeparatedByString:@":"];
+                value = XADeepestAtPoint(value, CGPointMake([parts[1] doubleValue], [parts[2] doubleValue]));
+            }
+        }
+      } @catch (NSException *e) {
+        value = [NSString stringWithFormat:@"error:%@: %@", e.name, e.reason];
+      }
+    });
+    return value;
+}
+
+static NSDictionary *XAPortHandle(NSDictionary *request) {
+    NSString *op = request[@"op"];
+    if ([op isEqualToString:@"commands"]) {
+        NSMutableDictionary *values = [NSMutableDictionary dictionary];
+        for (NSString *command in request[@"commands"]) values[command] = XAPortCommand(command) ?: @"none";
+        return @{@"values": values};
+    }
+    if ([op isEqualToString:@"snapshot"] || [op isEqualToString:@"attributes"]) {
+        id engine = XAEngine();
+        if (!engine) return @{@"error": @"the in-app automation engine is not available"};
+        // Local accessibility calls the app's own objects: XCTAccessibilityFramework requires the main
+        // thread for it (XCTAccessibilityFrameworkAssertThreadRequirement). The main queue is also
+        // drained during menu tracking and modal sessions (common run loop modes).
+        __block NSError *error;
+        __block id result;
+        __block NSString *exception;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            @try {
+                result = [op isEqualToString:@"snapshot"]
+                    ? [engine snapshotForElement:request[@"element"] attributes:request[@"attributes"] parameters:request[@"parameters"] ?: @{}
+                                 timeoutControls:nil error:&error]
+                    : [engine attributesForElement:request[@"element"] attributes:request[@"attributes"] error:&error];
+            } @catch (NSException *e) {
+                exception = [NSString stringWithFormat:@"%@: %@", e.name, e.reason];
+            }
+        });
+        if (exception) return @{@"error": exception};
+        if (!result) return @{@"error": error.localizedDescription ?: @"failed", @"nserror": error ?: [NSNull null]};
+        return @{@"result": result};
+    }
+    if ([op isEqualToString:@"menuOpenings"]) return @{@"result": @(gMenuOpenings), @"open": @(gMenuTrackingDepth > 0)};
+    if ([op isEqualToString:@"idle"]) {
+        id engine = XAEngine();
+        if (!engine) return @{@"error": @"the in-app automation engine is not available"};
+        dispatch_semaphore_t runLoop = dispatch_semaphore_create(0), animations = dispatch_semaphore_create(0);
+        [engine notifyWhenMainRunLoopIsIdle:^{ dispatch_semaphore_signal(runLoop); }];
+        BOOL idle = dispatch_semaphore_wait(runLoop, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0;
+        [engine notifyWhenAnimationsAreIdle:^{ dispatch_semaphore_signal(animations); }];
+        idle &= dispatch_semaphore_wait(animations, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0;
+        return idle ? @{@"result": @YES} : @{@"error": @"the application did not become idle"};
+    }
+    return @{@"error": [NSString stringWithFormat:@"unknown request %@", op]};
+}
+
+static CFDataRef XAPortCallback(CFMessagePortRef port, SInt32 msgid, CFDataRef data, void *info) {
+    @autoreleasepool {
+        NSDictionary *reply;
+        // An exception must become an error reply: an abort here would end the app under test and
+        // show a crash dialog in front of the user.
+        @try {
+            NSDictionary *request = XAUnarchive((__bridge NSData *)data);
+            reply = [request isKindOfClass:[NSDictionary class]] ? XAPortHandle(request) : @{@"error": @"malformed request"};
+        } @catch (NSException *e) {
+            XAInfo(@"port: request raised %@: %@", e.name, e.reason);
+            reply = @{@"error": [NSString stringWithFormat:@"%@: %@", e.name, e.reason]};
+        }
+        NSData *out = XAArchive(reply) ?: XAArchive(@{@"error": @"reply could not be archived"});
+        return out ? CFDataCreateCopy(NULL, (__bridge CFDataRef)out) : NULL;
+    }
+}
+
+static void XAStartPort(NSString *name) {
+    CFMessagePortContext context = {0};
+    gPort = CFMessagePortCreateLocal(NULL, (__bridge CFStringRef)name, XAPortCallback, &context, NULL);
+    if (!gPort) { XAInfo(@"port: could not register %@ (sandboxed apps need an app-group prefix)", name); return; }
+    CFMessagePortSetDispatchQueue(gPort, dispatch_queue_create("dev.xcuitestsim.port", DISPATCH_QUEUE_SERIAL));
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
+                                                  usingBlock:^(NSNotification *note) {
+        uint64_t count = ++gMenuOpenings;
+        XAInfo(@"port: menu opened (%llu) %@", count, [note.object title]);
+    }];
+    XAInfo(@"port: listening on %@", name);
+}
+
 #pragma mark - Diagnostics
 
 static IMP gWindowInit;
@@ -1205,6 +1388,7 @@ __attribute__((constructor)) static void XCUISimAgentInit(void) {
     [[NSNotificationCenter defaultCenter] addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
                                                   usingBlock:^(NSNotification *note) { gMenuTrackingDepth = MAX(gMenuTrackingDepth - 1, 0); }];
     if ([env[@"XCUISIM_DIAG"] isEqualToString:@"1"]) XAInstallDiagnostics();
+    if ([env[@"XCUISIM_PORT"] length]) XAStartPort(env[@"XCUISIM_PORT"]);
     // Offscreen apps are candidates for App Nap and timer throttling.
     gActivity = [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
                                                              reason:@"XCUISim offscreen UI test"];

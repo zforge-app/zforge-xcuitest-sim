@@ -104,6 +104,12 @@ def main():
         resign(app, args.identity, agent)
         # Screen recordings would capture the user's screen; screenshots are rendered by the agent.
         target["PreferredScreenCaptureFormat"] = "screenshots"
+        # XCTest's automatic screenshots (activities, failures) are taken by testmanagerd from the real
+        # screen, i.e. the user's work. Without Automation Mode they are never taken (keepNever); the
+        # default mode keeps XCTest's setting for now: removing the ~0.2 s each screenshot adds to every
+        # step exposed a menu-timing race in one Zforge test (Notes/no-automation-mode-spike-2026-11-02.md).
+        if extra.get("XCUISIM_NO_AUTOMATION_MODE") == "1":
+            target["SystemAttachmentLifetime"] = "keepNever"
         env = target.setdefault("TestingEnvironmentVariables", {})
         inserted = env.get("DYLD_INSERT_LIBRARIES")
         env["DYLD_INSERT_LIBRARIES"] = shim + (":" + inserted if inserted else "")
