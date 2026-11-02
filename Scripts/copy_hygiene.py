@@ -338,6 +338,23 @@ def terminate(roots, grace=5.0):
     return report
 
 
+def end_system_started_extensions(root):
+    """Before stripping a build: Xcode registers the apps it builds, and the system can start their app
+    extensions right away (Finder starts a Finder Sync extension it finds; seen 2026-11-02). Those are
+    the only processes that may run from a build the tool made (runs use copies), so they are ended:
+    unregistered first, so the system does not start them again, then terminated. Any other process
+    running from the build raises HygieneError and nothing is touched. Returns the ended processes."""
+    live = processes([root])
+    others = [(pid, path) for pid, path in live if ".appex/" not in path]
+    if others:
+        raise HygieneError(f"processes of {root} are running; not modifying it: "
+                           + ", ".join(f"{pid} {path}" for pid, path in others))
+    if not live:
+        return []
+    unregister([root])
+    return terminate([root])
+
+
 # --- run boundaries ---------------------------------------------------------------------------
 
 def preflight(roots):
@@ -408,8 +425,10 @@ def main():
     if command == "strip":
         try:
             for root in [r for r in roots if r != "--thorough"]:
-                if processes([root]):
-                    sys.exit(f"strip: processes of {root} are running; not modifying it")
+                ended = end_system_started_extensions(root)
+                if ended:
+                    print(f"strip: {root}: ended {len(ended)} app extension process(es) the system started from the build: "
+                          + ", ".join(f"{p['pid']} {p['path']} ({p['ended']})" for p in ended))
                 removed = strip_tree(root)
                 found = unregister([root], thorough="--thorough" in roots)
                 print(f"strip: {root}: removed {len(removed)} extension(s), "

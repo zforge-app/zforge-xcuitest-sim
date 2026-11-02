@@ -174,8 +174,10 @@ class StripTreeTests(SelfTestDir):
             self.assertEqual(plistlib.load(f)["TestConfigurations"][0]["TestTargets"][0]["DependentProductPaths"],
                              ["__TESTROOT__/Debug/Built.app"])
 
-    def fake_xcodebuild(self, status):
-        """A fake xcodebuild that 'builds' into -derivedDataPath and registers the app, as Xcode does."""
+    def fake_xcodebuild(self, status, start_extension=False):
+        """A fake xcodebuild that 'builds' into -derivedDataPath and registers the app, as Xcode does.
+        With `start_extension`, the build's app extension is then running, as when Finder starts a
+        Finder Sync extension it finds in the registered build (seen 2026-11-02)."""
         bin_dir = os.path.join(self.root, "bin")
         os.makedirs(bin_dir)
         helper = os.path.join(self.root, "fake_build.py")
@@ -185,7 +187,12 @@ class StripTreeTests(SelfTestDir):
                     "case = t.StripTreeTests('test_build_script_strips_and_unregisters'); case.root = %r; case.tag = %r\n"
                     "app = case.build_products(dd)[0]\n"
                     "subprocess.run([t.hy.LSREGISTER, '-f', app], check=True)\n"
-                    "sys.exit(%d)\n" % (os.path.dirname(os.path.abspath(__file__)), self.root, self.tag, status))
+                    "if %r:\n"
+                    "    import os, time\n"
+                    "    ext = os.path.join(app, 'Contents', 'PlugIns', 'Ext.appex', 'Contents', 'MacOS', 'Ext')\n"
+                    "    pid = subprocess.Popen([ext, '60'], start_new_session=True).pid\n"
+                    "    while not any(p == pid for p, _ in t.hy.processes([dd])): time.sleep(0.05)\n"
+                    "sys.exit(%d)\n" % (os.path.dirname(os.path.abspath(__file__)), self.root, self.tag, start_extension, status))
         with open(os.path.join(bin_dir, "xcodebuild"), "w") as f:
             f.write(f"#!/bin/sh\nshift\nexec {sys.executable} {helper} \"$@\"\n")
         os.chmod(os.path.join(bin_dir, "xcodebuild"), 0o755)
@@ -200,6 +207,32 @@ class StripTreeTests(SelfTestDir):
         self.assertIn("removed 2 extension(s)", result.stderr)
         self.assertEqual(glob.glob(os.path.join(dd, "Build", "Products", "**", "*.appex"), recursive=True), [])
         self.assertEqual(hy.registrations([dd]), {"launch_services": [], "pluginkit": []})
+
+    def test_build_script_ends_an_extension_the_system_started_from_the_build(self):
+        self.registers = True
+        dd = os.path.join(self.root, "dd")
+        result = subprocess.run([os.path.join(ROOT, "Scripts", "build-for-testing.sh"), dd, "-project", "X.xcodeproj"],
+                                env=self.fake_xcodebuild(0, start_extension=True), capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ended 1 app extension process(es)", result.stderr)
+        self.assertIn("removed 2 extension(s)", result.stderr)
+        self.assertEqual(hy.processes([dd]), [])
+        self.assertEqual(glob.glob(os.path.join(dd, "Build", "Products", "**", "*.appex"), recursive=True), [])
+        self.assertEqual(hy.registrations([dd]), {"launch_services": [], "pluginkit": []})
+
+    def test_strip_refuses_while_an_app_runs_from_the_build(self):
+        dd = os.path.join(self.root, "dd")
+        app = self.build_products(dd)[0]
+        proc = subprocess.Popen([os.path.join(app, "Contents", "MacOS", "Built")])
+        self.addCleanup(lambda: (proc.poll() is None and proc.kill(), proc.wait()))
+        while not any(pid == proc.pid for pid, _ in hy.processes([dd])):
+            time.sleep(0.05)
+        result = subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "copy_hygiene.py"), "strip", dd],
+                                capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("are running; not modifying it", result.stderr)
+        self.assertIsNone(proc.poll(), "the app keeps running")
+        self.assertTrue(os.path.isdir(os.path.join(app, "Contents", "PlugIns", "Ext.appex")), "nothing is stripped")
 
     def test_build_script_cleans_up_after_a_failed_build_and_keeps_its_status(self):
         self.registers = True

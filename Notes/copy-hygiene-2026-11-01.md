@@ -133,3 +133,20 @@ Keeping launched copies on disk means macOS re-registers their main apps. Option
 extension-less copies (the harmful part is gone), or delete copies after use and recreate lanes per run
 (`make-lane.py` takes seconds per lane), and remove the old comparison copies and builds (`cmp*`,
 `dd-*`) once they are no longer needed for re-runs. Not done without the user's decision.
+
+## Update 2026-11-02: extensions the system starts from a fresh build
+
+Xcode 27.1 (27A9275), macOS 27.0.1 (26A434). Twice in a row, `build-for-testing.sh` for Zforge failed
+after `** TEST BUILD SUCCEEDED **` with `strip: processes of …/builds/zforge-affected-tests are running;
+not modifying it`: Xcode's `RegisterWithLaunchServices` step registered the build, and the build's
+Finder Sync extension (same bundle identifier as the developer's enabled one) was started from the build
+within seconds (07:42:38, pid 72544; again pid 73409). The consumer then reported all its UI tests as
+failed without running them. Xcode has no build setting to skip the registration.
+
+`strip` now ends such processes first (`end_system_started_extensions`): when every process running from
+the build is an app extension, the build is unregistered (so the system does not start them again) and
+they are terminated, then stripped. Any other process running from the build (an app) still makes `strip`
+refuse and touch nothing. Tests: `test_build_script_ends_an_extension_the_system_started_from_the_build`
+(failed before the change with the message above) and `test_strip_refuses_while_an_app_runs_from_the_build`;
+`python3 -m unittest discover -s Tests`: 26 tests passed. The next Zforge build stripped normally and its
+14 offscreen tests passed.
