@@ -17,6 +17,7 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <os/log.h>
 #import <dlfcn.h>
 
@@ -89,9 +90,25 @@ static NSArray<NSWindow *> *XAWindowsFrontToBack(void) {
     return windows;
 }
 
+// Since macOS 27.2 an alert sheet's panel (`_NSAlertPanel`) is not ordered into the window server
+// itself: an `AppKit._NSGlassEffectWindow` child, larger than the panel (its glass and shadow), is
+// ordered in on its behalf (`-_orderingProxiedWindow`) and shows the panel's layers, while the panel
+// keeps the views and key status. A click inside the panel's frame belongs to
+// the panel; elsewhere in the proxy (the glass margin) it belongs to whatever lies below.
+static NSWindow *XAOrderingProxiedWindow(NSWindow *window) {
+    static SEL selector;
+    if (!selector) selector = NSSelectorFromString(@"_orderingProxiedWindow");
+    if (![window respondsToSelector:selector]) return nil;
+    id proxied = ((id (*)(id, SEL))objc_msgSend)(window, selector);
+    return [proxied isKindOfClass:[NSWindow class]] ? proxied : nil;
+}
+
 static NSWindow *XAWindowAtPoint(NSPoint point) {
     for (NSWindow *window in XAWindowsFrontToBack()) {
-        if (window.isVisible && NSPointInRect(point, window.frame)) return window;
+        if (!window.isVisible || !NSPointInRect(point, window.frame)) continue;
+        NSWindow *proxied = XAOrderingProxiedWindow(window);
+        if (!proxied) return window;
+        if (proxied.isVisible && NSPointInRect(point, proxied.frame)) return proxied;
     }
     return nil;
 }
@@ -201,12 +218,30 @@ static void XACollectTrackingAreas(NSView *view, NSMutableArray *areas) {
 
 static NSInteger gMenuTrackingDepth; // > 0 while any NSMenu is tracking (context, pop-up, menu bar)
 
+// Since macOS 27.2 the tracking areas of newly shown views (e.g. a custom view in a context-menu item)
+// stay pending until the window's tracking-area manager updates them, which AppKit does when it routes
+// a pointer event from the window server. Simulated pointer events do not take that path, so the
+// pending areas are brought up to date before the simulated cursor is checked against them.
+static void XAUpdatePendingTrackingAreas(NSWindow *window) {
+    static Ivar managerIvar;
+    static SEL update;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        managerIvar = class_getInstanceVariable([NSWindow class], "_trackingAreaManager");
+        update = NSSelectorFromString(@"_updateTrackingAreasIfNeeded");
+        if (!managerIvar) XAInfo(@"missing NSWindow _trackingAreaManager: pending tracking areas are not updated");
+    });
+    id manager = managerIvar ? object_getIvar(window, managerIvar) : nil;
+    if ([manager respondsToSelector:update]) ((void (*)(id, SEL))objc_msgSend)(manager, update);
+}
+
 // Emulates the window server's tracking-area events: entered/exited when the simulated cursor crosses
 // an area, and mouseMoved inside areas created with NSTrackingMouseMoved. Menus are included: their
 // windows are not in NSApp.windows, and views in menu items rely on these events for hover.
 static void XAUpdateTrackingAreas(void) {
     NSWindow *target = XAWindowAtPoint(gMouse);
     for (NSWindow *window in XAWindowsFrontToBack()) {
+        XAUpdatePendingTrackingAreas(window);
         NSView *root = window.contentView.superview ?: window.contentView;
         NSMutableArray *areas = [NSMutableArray array];
         if (root) XACollectTrackingAreas(root, areas);

@@ -80,6 +80,7 @@ static BOOL gDropEvents;
 static NSMutableDictionary<NSString *, NSNumber *> *gSimulatedApps; // bundle ID -> pid
 static BOOL gNoAutomationMode; // spike: XCUISIM_NO_AUTOMATION_MODE=1
 static pid_t gLastPid;
+static BOOL gLaunchHooksInstalled; // XCUIApplicationImpl launch hooks (what makes a launch simulated)
 static NSUInteger gModifierFlags; // modifier state as the agent tracks it
 static NSUInteger gNextRequest;
 
@@ -352,7 +353,11 @@ static void XSLaunch(NSString *bundleID, NSString *path, NSArray *arguments, NSD
     __block BOOL simulated;
     dispatch_sync(XSQueue(), ^{ simulated = [gSimulatedApps.allValues containsObject:pid]; });
     XSInfo(@"setFrontProcess %@ %@", pid, simulated ? @"(simulated: activation stays in-process)" : @"(not simulated: refused)");
-    if (!simulated) { completion(XSError(@"Activating a process outside the simulation is not allowed")); return; }
+    if (!simulated) {
+        completion(XSError(gLaunchHooksInstalled ? @"Activating a process outside the simulation is not allowed"
+                                                 : @"XCUISim launch hooks are not installed (unsupported Xcode): the app was launched without the agent"));
+        return;
+    }
     XSAgentRequest(self.target, pid.intValue, @"activate", ^(NSString *answer, NSError *error) { completion(error); });
 }
 
@@ -619,23 +624,43 @@ static BOOL XSRefusedFrontProcessError(id self, SEL _cmd, pid_t pid, NSError **e
     return NO;
 }
 
+// The launch hooks are what make a run simulated: without them the app starts without the agent,
+// shows real windows and is never reported as foreground. They are installed as soon as
+// XCUIApplicationImpl is loaded and do not depend on any guard class, because the guard classes
+// change between Xcode releases (Xcode 27.2 removed XCUILaunchServicesMonitor; its successor,
+// XCUIPlatformApplicationManager, forwards setFrontProcess to the daemon session, which is the
+// path the proxy simulates, so it must not be refused).
+static void XSInstallLaunchHooksIfPossible(void) {
+    static BOOL attempted;
+    Class impl = NSClassFromString(@"XCUIApplicationImpl");
+    if (attempted || !impl) return;
+    attempted = YES;
+    BOOL ok = XSSwizzle(impl, NSSelectorFromString(@"_launchUsingXcodeWithArguments:environment:launchURL:"), (IMP)XSLaunchUsingXcode, &gOriginalLaunchUsingXcode);
+    ok &= XSSwizzle(impl, NSSelectorFromString(@"_launchUsingPlatformWithArguments:environment:launchURL:"), (IMP)XSLaunchUsingPlatform, &gOriginalLaunchUsingPlatform);
+    gLaunchHooksInstalled = ok;
+    if (ok) XSInfo(@"installed launch hooks on XCUIApplicationImpl: yes");
+    else XSInfo(@"ERROR: launch hooks on XCUIApplicationImpl NOT installed (unsupported Xcode): apps launch without the agent and cannot be activated");
+}
+
 static void XSInstallGuardsIfPossible(void) {
     static BOOL installed;
-    Class monitor = NSClassFromString(@"XCUILaunchServicesMonitor");
     Class framework = NSClassFromString(@"XCUILaunchServicesFramework");
-    Class impl = NSClassFromString(@"XCUIApplicationImpl");
-    if (installed || !monitor || !framework || !impl) return;
+    if (installed || !framework) return;
     installed = YES;
     IMP unused;
-    BOOL ok = XSSwizzle(monitor, NSSelectorFromString(@"setFrontProcess:completion:"), (IMP)XSRefusedFrontProcessCompletion, &unused);
-    ok &= XSSwizzle(framework, NSSelectorFromString(@"setFrontProcess:error:"), (IMP)XSRefusedFrontProcessError, &unused);
-    ok &= XSSwizzle(impl, NSSelectorFromString(@"_launchUsingXcodeWithArguments:environment:launchURL:"), (IMP)XSLaunchUsingXcode, &gOriginalLaunchUsingXcode);
-    ok &= XSSwizzle(impl, NSSelectorFromString(@"_launchUsingPlatformWithArguments:environment:launchURL:"), (IMP)XSLaunchUsingPlatform, &gOriginalLaunchUsingPlatform);
-    XSInfo(@"installed LaunchServices activation guards: %@", ok ? @"yes" : @"PARTIAL");
+    NSMutableArray *guarded = [NSMutableArray array];
+    if (XSSwizzle(framework, NSSelectorFromString(@"setFrontProcess:error:"), (IMP)XSRefusedFrontProcessError, &unused))
+        [guarded addObject:@"XCUILaunchServicesFramework"];
+    // Xcode 27.1 and earlier only; a direct LaunchServices path there.
+    Class monitor = NSClassFromString(@"XCUILaunchServicesMonitor");
+    if (monitor && XSSwizzle(monitor, NSSelectorFromString(@"setFrontProcess:completion:"), (IMP)XSRefusedFrontProcessCompletion, &unused))
+        [guarded addObject:@"XCUILaunchServicesMonitor"];
+    XSInfo(@"installed LaunchServices activation guards: %@", guarded.count ? [guarded componentsJoinedByString:@", "] : @"NONE");
 }
 
 static void XSImageAdded(const struct mach_header *header, intptr_t slide) {
     XSInstallIfPossible();
+    XSInstallLaunchHooksIfPossible();
     XSInstallGuardsIfPossible();
 }
 
@@ -649,5 +674,12 @@ __attribute__((constructor)) static void XCUISimRunnerShimInit(void) {
     gPortName = env[@"XCUISIM_PORT"];
     gSimulatedApps = [NSMutableDictionary dictionary];
     XSInfo(@"runner shim loaded in %@ (agent %@)", NSProcessInfo.processInfo.processName, gAgentPath);
+    // Since Xcode 27.2, -[XCElementSnapshot displayID] of a snapshot without a display (the agent's
+    // snapshots come from the app's local engine) asks CoreGraphics in the runner
+    // (XCTDisplayInterface -> CGGetDisplaysWithRect), and SkyLight asserts (CGS_REQUIRE_INIT) in a
+    // process that never opened its window-server session: the LSBackgroundOnly runner aborts at the
+    // first synthesized event. Opening the session here is only a connection: no window, activation
+    // or event. (Xcode 27.1 resolved displays through a DisplayManager that did not require it.)
+    XSInfo(@"runner CoreGraphics session opened (main display %u)", CGMainDisplayID());
     _dyld_register_func_for_add_image(XSImageAdded);
 }
