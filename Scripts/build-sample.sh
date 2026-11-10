@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds the sample app for testing. Optional first argument: a regression flag
-# (CLICK, SHORTCUT, TYPING, CONTEXT, MENU, MODIFIER, HOVER, FOCUS) compiled into a separate
+# (CLICK, SHORTCUT, TYPING, CONTEXT, MENU, MODIFIER, HOVER, FOCUS, MENUHOVER, SCROLL, SWITCH) compiled into a separate
 # derived data directory for negative-control runs. Built through build-for-testing.sh, so the
 # products carry no app extension and nothing stays registered with Launch Services.
 set -euo pipefail

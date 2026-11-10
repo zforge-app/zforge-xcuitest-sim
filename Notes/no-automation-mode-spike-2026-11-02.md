@@ -123,6 +123,8 @@ by default). Without the switch nothing changes.
   descends to the smallest element whose frame contains the point; elements built from the AppKit object
   that accessibility exposes (e.g. `NSButtonCell`) have the same token as the tree's (probe
   `Notes/probes/hitprobe.m`).
+  Update 2026-11-10: port hit tests now run with the requesting client identified, as inside a real
+  accessibility request; SwiftUI hit tests differently outside one (`Notes/swiftui-switch-hit-test-2026-11-10.md`).
 
 ### Evidence (Zforge)
 

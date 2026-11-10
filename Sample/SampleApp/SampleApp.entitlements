@@ -3,5 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.app-sandbox</key><true/>
+	<!-- A sandboxed app may only register message ports under one of its app groups: the agent's port
+	     (runs without Automation Mode) is named after this group. -->
+	<key>com.apple.security.application-groups</key>
+	<array><string>$(DEVELOPMENT_TEAM).dev.xcuitestsim.SampleApp</string></array>
 </dict>
 </plist>

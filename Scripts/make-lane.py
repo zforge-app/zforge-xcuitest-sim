@@ -91,23 +91,26 @@ def main():
     with open(runs[0], "rb") as f:
         run = plistlib.load(f)
     renamed, ports = {}, []
-    for config in run["TestConfigurations"]:
-        for target in config["TestTargets"]:
-            if not target.get("IsUITestBundle"):
-                continue
-            app = target["UITargetAppPath"].replace("__TESTROOT__", args.lane)
-            host = target["TestHostPath"].replace("__TESTROOT__", args.lane)
-            if app not in renamed:
-                renamed[app] = rename_bundle(app, args.suffix, args.identity, args.app_group_suffix, args.plist_suffix_key)
-            port = port_name(renamed[app][2], renamed[app][1], args.suffix)
-            ports.append(port)
-            if host not in renamed:
-                renamed[host] = rename_bundle(host, args.suffix, args.identity, False, args.plist_suffix_key, lookup=port,
-                                              groups=renamed[app][2].get(GROUPS))
-            old_host, new_host = renamed[host][:2]
-            target["TestHostBundleIdentifier"] = new_host
-            ids = {r[0]: r[1] for r in renamed.values()}
-            target["BundleIdentifiersForCrashReportEmphasis"] = [ids.get(i, i) for i in target.get("BundleIdentifiersForCrashReportEmphasis", [])]
+    # Test plan builds list their targets under TestConfigurations; builds without a test plan keep
+    # each target at the top level of the xctestrun (as prepare-xctestrun.py also reads them).
+    targets = [t for c in run["TestConfigurations"] for t in c["TestTargets"]] if "TestConfigurations" in run else \
+        [run[k] for k in run if k not in ("__xctestrun_metadata__", "CodeCoverageBuildableInfos")]
+    for target in targets:
+        if not target.get("IsUITestBundle"):
+            continue
+        app = target["UITargetAppPath"].replace("__TESTROOT__", args.lane)
+        host = target["TestHostPath"].replace("__TESTROOT__", args.lane)
+        if app not in renamed:
+            renamed[app] = rename_bundle(app, args.suffix, args.identity, args.app_group_suffix, args.plist_suffix_key)
+        port = port_name(renamed[app][2], renamed[app][1], args.suffix)
+        ports.append(port)
+        if host not in renamed:
+            renamed[host] = rename_bundle(host, args.suffix, args.identity, False, args.plist_suffix_key, lookup=port,
+                                          groups=renamed[app][2].get(GROUPS))
+        old_host, new_host = renamed[host][:2]
+        target["TestHostBundleIdentifier"] = new_host
+        ids = {r[0]: r[1] for r in renamed.values()}
+        target["BundleIdentifiersForCrashReportEmphasis"] = [ids.get(i, i) for i in target.get("BundleIdentifiersForCrashReportEmphasis", [])]
     with open(runs[0], "wb") as f:
         plistlib.dump(run, f)
     for old, new, _ in renamed.values():

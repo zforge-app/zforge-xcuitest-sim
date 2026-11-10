@@ -949,6 +949,37 @@ static id XAScreenshot(NSRect topLeftRect) {
     return png ? [png base64EncodedStringWithOptions:0] : @"error:encode";
 }
 
+#pragma mark - Hit testing as the accessibility server
+
+// The accessibility server answers a client's hit test (AXUIElementCopyElementAtPosition) while it
+// serves that client's request, and HIServices identifies the client for the request's duration
+// (_AXGetClientForCurrentRequestUntrusted). Frameworks branch on that: SwiftUI's
+// NSHostingView.hitTest(_:) asks AXIsClientMakingRequest() and, during a request, returns the hosting
+// view itself, whose accessibilityHitTest: then answers the SwiftUI accessibility node at the point
+// (e.g. a Toggle's CheckBox). Outside a request it hit tests for events instead and returns the AppKit
+// view it hosts (e.g. the NSSwitch behind a .switch toggle), which is not in the accessibility tree.
+// Hit tests that do not arrive inside a request (the direct port) are therefore run with the
+// requesting client identified, as HIServices does for a real request (Notes/swiftui-switch-hit-test-2026-11-10.md).
+static void (*gSetClientOverride)(pid_t);
+static pid_t (*gCurrentClient)(void);
+
+static id XAHitTestAsServer(NSWindow *window, NSPoint point, pid_t client) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gSetClientOverride = (void (*)(pid_t))dlsym(RTLD_DEFAULT, "_AXSetClientIdentificationOverride");
+        gCurrentClient = (pid_t (*)(void))dlsym(RTLD_DEFAULT, "_AXGetClientForCurrentRequestUntrusted");
+        if (!gSetClientOverride || !gCurrentClient) XAInfo(@"hit test: HIServices client identification is missing; hit tests run outside a request");
+    });
+    // Inside a real request (the attribute channel) the client is already identified.
+    BOOL identify = client > 0 && gSetClientOverride && gCurrentClient && gCurrentClient() == 0;
+    if (identify) gSetClientOverride(client);
+    @try {
+        return [window accessibilityHitTest:point];
+    } @finally {
+        if (identify) gSetClientOverride(0);
+    }
+}
+
 #pragma mark - Channel
 
 static IMP gAttributeValue;
@@ -972,7 +1003,9 @@ static NSString *XADiagnoseKey(NSString *key, NSUInteger xcuiFlags) {
     return [NSString stringWithFormat:@"event=%@ window=%d menu=%d items=%@", event, windowHandled, menuHandled, items];
 }
 
-static id XAHandleCommand(NSString *command) {
+// client: pid of the process whose request is being answered when the command does not arrive inside an
+// accessibility request (the direct port); 0 inside a request (the attribute channel).
+static id XAHandleCommand(NSString *command, pid_t client) {
     if ([command isEqualToString:@"ping"]) return [NSString stringWithFormat:@"pong:%d", getpid()];
     if ([command isEqualToString:@"scale"]) return [NSString stringWithFormat:@"%g", NSScreen.screens.firstObject.backingScaleFactor ?: 2];
     if ([command hasPrefix:@"shot:"]) {
@@ -985,7 +1018,7 @@ static id XAHandleCommand(NSString *command) {
         NSArray *parts = [command componentsSeparatedByString:@":"];
         NSPoint point = XACocoaPoint([parts[1] doubleValue], [parts[2] doubleValue]);
         NSWindow *window = XAWindowAtPoint(point);
-        id element = window ? [window accessibilityHitTest:point] : XAMenuBarItemAtPoint(point, NULL);
+        id element = window ? XAHitTestAsServer(window, point, client) : XAMenuBarItemAtPoint(point, NULL);
         XAInfo(@"hit test %@ -> %@ in %@", NSStringFromPoint(point), element, window.className);
         return element ?: @"none";
     }
@@ -1056,7 +1089,7 @@ static id XAHandleCommand(NSString *command) {
 
 static id XAAttributeValue(NSApplication *self, SEL _cmd, NSString *attribute) {
     if ([attribute isKindOfClass:[NSString class]] && [attribute hasPrefix:@"XCUISim:"]) {
-        return XAHandleCommand([attribute substringFromIndex:8]);
+        return XAHandleCommand([attribute substringFromIndex:8], 0);
     }
     return ((id (*)(id, SEL, NSString *))gAttributeValue)(self, _cmd, attribute);
 }
@@ -1148,11 +1181,11 @@ static id XADeepestAtPoint(id root, CGPoint point) {
 
 // Runs a command of the attribute channel on the main thread; accessibility objects (hit tests) are
 // returned as XCTest elements, as testmanagerd would hand them over.
-static id XAPortCommand(NSString *command) {
+static id XAPortCommand(NSString *command, pid_t client) {
     __block id value;
     dispatch_sync(dispatch_get_main_queue(), ^{
       @try {
-        value = XAHandleCommand(command);
+        value = XAHandleCommand(command, client);
         if (value && ![value isKindOfClass:[NSString class]]) {
             AXUIElementRef ref = NSAccessibilityCreateAXUIElementRef(value);
             value = ref ? [NSClassFromString(@"XCAccessibilityElement") elementWithAXUIElement:ref] : @"none";
@@ -1173,7 +1206,10 @@ static NSDictionary *XAPortHandle(NSDictionary *request) {
     NSString *op = request[@"op"];
     if ([op isEqualToString:@"commands"]) {
         NSMutableDictionary *values = [NSMutableDictionary dictionary];
-        for (NSString *command in request[@"commands"]) values[command] = XAPortCommand(command) ?: @"none";
+        // The runner shim names itself as the requesting client; older shims do not, and the app then
+        // stands in for it (any client identifies a request).
+        pid_t client = [request[@"client"] intValue] ?: getpid();
+        for (NSString *command in request[@"commands"]) values[command] = XAPortCommand(command, client) ?: @"none";
         return @{@"values": values};
     }
     if ([op isEqualToString:@"snapshot"] || [op isEqualToString:@"attributes"]) {

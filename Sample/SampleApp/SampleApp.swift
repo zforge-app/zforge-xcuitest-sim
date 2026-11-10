@@ -10,6 +10,7 @@ final class SampleModel: ObservableObject {
     @Published var contextActions = 0
     @Published var lastModifierClick = "none"
     @Published var hover = "outside"
+    @Published var switchOn = false
 
     /// Regressions are compiled in only for negative-control builds of the sample.
     static var regressions: Set<String> {
@@ -33,6 +34,8 @@ final class SampleModel: ObservableObject {
         return ["menuhover"]
         #elseif REGRESSION_SCROLL
         return ["scroll"]
+        #elseif REGRESSION_SWITCH
+        return ["switch"]
         #else
         return []
         #endif
@@ -111,6 +114,11 @@ struct ContentView: View {
                 .frame(width: 200, height: 30)
                 .accessibilityIdentifier("menu-hover-target")
             HorizontalScroller()
+            CompactSwitchRow(isOn: Binding(
+                get: { model.switchOn },
+                set: { if !SampleModel.regressions.contains("switch") { model.switchOn = $0 } }
+            ))
+            Text("Switch: \(model.switchOn ? "on" : "off")").accessibilityIdentifier("switch-label")
         }
         .padding(20)
         .frame(width: 420, alignment: .topLeading)
@@ -226,6 +234,23 @@ struct MenuHoverTarget: NSViewRepresentable {
     }
 }
 
+
+/// A small switch whose label is hidden (the title is shown beside it and hidden from accessibility):
+/// SwiftUI exposes the toggle as its own accessibility node above the AppKit switch it hosts.
+struct CompactSwitchRow: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Compact switch").accessibilityHidden(true)
+            Toggle(isOn: $isOn) { Text("Compact switch") }
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .accessibilityIdentifier("compact-switch")
+        }
+    }
+}
 
 /// A horizontal scroll view whose offset is reported as text.
 struct HorizontalScroller: View {

@@ -427,6 +427,24 @@ class RunnerTests(SelfTestDir):
         self.assertEqual(ents["com.apple.security.application-groups"], ["TEAM.dev.xcuitestsim.group.lane1"])
         self.assertNotIn("SystemAttachmentLifetime", target)
 
+    def test_make_lane_reads_an_xctestrun_without_a_test_plan(self):
+        # A scheme without a test plan lists each target at the top level of the xctestrun
+        # (format version 1), as the sample app's does.
+        with open(self.xctestrun, "rb") as f:
+            target = plistlib.load(f)["TestConfigurations"][0]["TestTargets"][0]
+        with open(self.xctestrun, "wb") as f:
+            plistlib.dump({"__xctestrun_metadata__": {"FormatVersion": 1}, "UITests": target}, f)
+        lane = os.path.join(self.root, "lane")
+        result = subprocess.run([sys.executable, os.path.join(ROOT, "Scripts", "make-lane.py"), self.products, lane,
+                                 "--suffix", "lane1", "--identity", "-", "--env", "XCUISIM_NO_AUTOMATION_MODE=1"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with open(glob.glob(os.path.join(lane, "*-offscreen.xctestrun"))[0], "rb") as f:
+            prepared = plistlib.load(f)["UITests"]
+        port = f"dev.xcuitestsim.selftest.{self.tag}.lane1.xcuisim.lane1"
+        self.assertEqual(prepared["TestHostBundleIdentifier"], f"dev.xcuitestsim.selftest.{self.tag}.runner.lane1")
+        self.assertEqual(prepared["TestingEnvironmentVariables"]["XCUISIM_PORT"], port)
+
     def test_run_lanes_makes_copies_without_extensions_and_deletes_them(self):
         env = self.fake_xcodebuild("exit 0")
         proc = self.lanes(env, f"lanes-{self.tag}", lanes=2)

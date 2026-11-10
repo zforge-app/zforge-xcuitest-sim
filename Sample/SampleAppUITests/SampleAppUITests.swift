@@ -113,4 +113,17 @@ final class SampleAppUITests: XCTestCase {
         scroller.scroll(byDeltaX: 800, deltaY: 0)
         XCTAssertTrue(app.staticTexts["Scrolled: no"].waitForExistence(timeout: 3), app.debugDescription)
     }
+
+    /// A small SwiftUI switch with a hidden label is hittable at its centre and toggles both ways.
+    @MainActor
+    func testCompactSwitchToggles() {
+        let toggle = app.descendants(matching: .any)["compact-switch"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Switch: off"].exists)
+        XCTAssertTrue(toggle.isHittable, app.debugDescription)
+        toggle.click()
+        XCTAssertTrue(app.staticTexts["Switch: on"].waitForExistence(timeout: 3), app.debugDescription)
+        toggle.click()
+        XCTAssertTrue(app.staticTexts["Switch: off"].waitForExistence(timeout: 3), app.debugDescription)
+    }
 }

@@ -192,7 +192,7 @@ static NSError *XSReplyError(NSDictionary *reply) {
 static void XSFetchFromAgent(id daemon, pid_t pid, NSArray<NSString *> *commands, void (^reply)(NSDictionary *, NSError *)) {
     if (gNoAutomationMode && gPortName.length) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSDictionary *answer = XSPortSend(@{@"op": @"commands", @"commands": commands}, 30);
+            NSDictionary *answer = XSPortSend(@{@"op": @"commands", @"commands": commands, @"client": @(getpid())}, 30);
             reply(answer[@"values"], XSReplyError(answer));
         });
         return;

@@ -3,8 +3,8 @@
 # run of the unchanged suite must fail the matching test (and only tests that depend on it).
 set -uo pipefail
 root=${0:A:h:h}
-regressions=(${@:-CLICK SHORTCUT TYPING CONTEXT MENU MODIFIER HOVER FOCUS})
-(( $# )) || regressions=(CLICK SHORTCUT TYPING CONTEXT MENU MODIFIER HOVER FOCUS)
+regressions=(${@:-CLICK SHORTCUT TYPING CONTEXT MENU MODIFIER HOVER FOCUS SWITCH})
+(( $# )) || regressions=(CLICK SHORTCUT TYPING CONTEXT MENU MODIFIER HOVER FOCUS SWITCH)
 for regression in $regressions; do
     xctestrun=$($root/Scripts/build-sample.sh $regression)
     $root/Scripts/prepare-xctestrun.py $xctestrun --identity "${XCUISIM_SIGN_IDENTITY:-Apple Development}" > /dev/null 2>&1
