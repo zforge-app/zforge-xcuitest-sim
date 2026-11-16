@@ -1,19 +1,19 @@
 # Zforge real vs simulated, same build — 2026-10-31
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display.
-Tool: zforge-xcuitest-sim at commit `0833d9a` (agent and shim built from it; an experimental agent
+Tool: zforge-xcuitest-sim at commit `82e8d61` (agent and shim built from it; an experimental agent
 change made during this session was reverted, see "Duration").
 Real (screen-taking) runs were authorized by the user and announced immediately before each start.
 
 ## Build
 
-- Zforge base commit `7ea66ec470133c21025b53d7f64f6873c226a863` (2026-10-30, "feat: Finder-parity
+- Zforge base commit `c127bcaa357e39fabdd7f0cdf2085b43f6aff200` (2026-10-30, "feat: Finder-parity
   sidebar, toolbar search and Network level"); the working tree was clean (`git status` empty), so the
   build is exactly that commit. The Zforge repository was only read.
 - Copied with rsync to `~/Library/Caches/dev.xcuitestsim/cmp-zf/src` and built once with
   `xcodebuild build-for-testing -scheme Zforge -testPlan UI-Full -configuration Debug` into `cmp-zf/dd`.
   On 2026-11-01 the source copy and the comparison copies were deleted; the build's products are kept
-  as `~/Library/Caches/dev.xcuitestsim/builds/zforge-7ea66ec/Products` (Finder extension removed,
+  as `~/Library/Caches/dev.xcuitestsim/builds/zforge-c127bca/Products` (Finder extension removed,
   `Zforge.debug.dylib` SHA-256 still `da557f4a8d41b160`), the results moved to
   `.local/results/cache-2026-11-01/cmp-zf/` (see `Notes/evidence-2026-11-01.md`).
   Nothing the runner or the app loads is under `~/Documents`.
@@ -79,7 +79,7 @@ one simulated run per case (plus earlier simulated repeats, all passing); one re
 simulated runs are ~10 % slower; the menu bar and tracking areas remain emulations validated only
 for the interactions exercised here and in `Notes/real-vs-simulated-2026-10-31.md`.
 
-## Coverage of the other Zforge UI tests (commit 7ea66ec, 26 tests)
+## Coverage of the other Zforge UI tests (commit c127bca, 26 tests)
 
 Real-only (out of the app or through the window server), 9 tests:
 - Finder: `testFinderSubmenuOffersArchiveActionsAndExtractsInZforge`, `testArchivePromisesPublishIntoFinderBeforeRemovingOriginal`.

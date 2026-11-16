@@ -1,9 +1,9 @@
 # Zforge simulated-mode coverage — consolidated (2026-10-31)
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Zforge
-`7ea66ec470133c21025b53d7f64f6873c226a863` (clean working tree), one build used for every comparison
+`c127bcaa357e39fabdd7f0cdf2085b43f6aff200` (clean working tree), one build used for every comparison
 (`Zforge.debug.dylib` SHA-256 `da557f4a8d41b160…`; simulated copies have the same `__text`). Tool at
-`96d7c1c`. Details per stage: `Notes/zforge-real-vs-simulated-2026-10-31.md`,
+`13c5516`. Details per stage: `Notes/zforge-real-vs-simulated-2026-10-31.md`,
 `Notes/zforge-stage1-keyboard-2026-10-31.md` … `Notes/zforge-stage8-in-app-drags-2026-10-31.md`.
 
 Method for every test: real run and simulated run on the same build; outcome, failing assertion
@@ -35,7 +35,7 @@ simulated mode and diffed against their real references.
 | 17 | testListHeaderDividerResizesAndHeaderBodyReorders | **real-only** (header reorder is window-server drag and drop) | not run | refused with an explicit unsupported log | n/a |
 
 Totals: 14 equivalent passing tests (all with a regression caught identically in both modes);
-2 tests that fail in the real mode at `7ea66ec` and fail identically offscreen; 1 test moved to the
+2 tests that fail in the real mode at `c127bca` and fail identically offscreen; 1 test moved to the
 real-only group. The 14 passing tests take 409.8 s real and 457.3 s simulated (+12 %; per action
 +0.1–0.2 s from the agent round trips; range +4 % to +35 % per test).
 

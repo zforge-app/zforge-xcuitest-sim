@@ -1,8 +1,8 @@
 # Zforge simulated mode — parallel lanes, measured prototype (2026-10-31)
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), Apple M5 (10 cores), 24 GB, single display.
-Zforge `7ea66ec470133c21025b53d7f64f6873c226a863` (clean; the repository was only read), the same
-build as every earlier comparison (`Notes/zforge-coverage-summary-2026-10-31.md`). Tool at `23150cf`
+Zforge `c127bcaa357e39fabdd7f0cdf2085b43f6aff200` (clean; the repository was only read), the same
+build as every earlier comparison (`Notes/zforge-coverage-summary-2026-10-31.md`). Tool at `3614b54`
 plus the changes listed below. No real (screen-taking) run was needed or made in this phase.
 Run artifacts named here (`par*`, `menuprobe-final`, `lock-probe`, `stress-fileopen*`, …) are in
 `.local/results/cache-2026-11-01/lanes/results/` and `…/cmp-zf/results-stages/` since 2026-11-01; the
@@ -175,7 +175,7 @@ original copies, session unlocked):
 
 ### Confirmation with the final agent (2026-10-31, 23:30–23:40)
 
-Run after the user unlocked the session, on the existing lane copies of `7ea66ec` (no rebuild from
+Run after the user unlocked the session, on the existing lane copies of `c127bca` (no rebuild from
 the Zforge repository) holding the final agent (CDHash `a7f1fa42…`, the committed source). The session
 was checked unlocked before each step and stayed unlocked. Another agent thread was working in the
 Zforge repository at the same time (builds into `/tmp/zf-fix/dd`, then a unit-test run); a watcher

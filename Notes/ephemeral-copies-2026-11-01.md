@@ -1,8 +1,8 @@
 # Ephemeral copies, cache cleanup and the 2-lane confirmation (2026-11-01)
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), Apple M5 (10 cores), 24 GB, single display.
-Tool at `25290d3` plus the changes below. No real (screen-taking) run. The Zforge repository was not
-read or built; the Zforge build is the existing `7ea66ec` one (below). Follows
+Tool at `ff22422` plus the changes below. No real (screen-taking) run. The Zforge repository was not
+read or built; the Zforge build is the existing `c127bca` one (below). Follows
 `Notes/copy-hygiene-2026-11-01.md`, whose open decision the user settled: delete copies after use.
 
 ## Why
@@ -36,9 +36,9 @@ check. A deleted copy cannot come back.
 
 Evidence first: every real reference and every artifact a note cites (242, 4.9 GB) moved to
 `.local/results/cache-2026-11-01/` with their relative paths; notes updated; index in
-`Notes/evidence-2026-11-01.md`. The Zforge `7ea66ec` build of every comparison (never launched; Finder
+`Notes/evidence-2026-11-01.md`. The Zforge `c127bca` build of every comparison (never launched; Finder
 extension already removed; `Zforge.debug.dylib` SHA-256 `da557f4a8d41b160`) moved to
-`~/Library/Caches/dev.xcuitestsim/builds/zforge-7ea66ec/Products` as the source for runs.
+`~/Library/Caches/dev.xcuitestsim/builds/zforge-c127bca/Products` as the source for runs.
 
 Then `copy_hygiene.py dispose --thorough` on `lanes/`, `cmp`, `cmp-s1`, `cmp-s4`, `cmp-s7`, `cmp-zf`,
 `dd-sample`, `dd-zforge`, `dd-zforge-reg-{blankmenu,iconpref,shortcut}`: 0 leftover processes,
@@ -78,7 +78,7 @@ of 2026-10-31), load average 15 at the end. A second wait for a sustained quiet 
 averages below 8) ran from 19:17 to 20:30 without the load ever falling below 10 (it reached 150) and
 was stopped at the user's request.
 
-Fresh lane copies of `builds/zforge-7ea66ec/Products` (distinct bundle identifiers, own app group, no
+Fresh lane copies of `builds/zforge-c127bca/Products` (distinct bundle identifiers, own app group, no
 extension); no foreign `xcodebuild` or test runner; session unlocked. Results in
 `~/Library/Caches/dev.xcuitestsim/lanes-results/par2-eph*`.
 
