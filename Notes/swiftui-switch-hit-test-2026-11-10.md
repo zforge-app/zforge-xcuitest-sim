@@ -70,9 +70,9 @@ in-app engine (XCTAutomationSupport) does not import `_AXSetClientIdentification
 | sample `sw-after-noam` | fixed | passed; guard: 0 front changes, 0 windows, 0 synthetic, 0 hardware events |
 | sample `sw-sample-all` (11 tests, no Automation Mode) | fixed | 11/11; guard clean |
 | sample `sw-reg-switch` (`REGRESSION_SWITCH` build) | fixed | `testCompactSwitchToggles` failed at line 125 (click delivered, state unchanged), `testButtonClick` passed |
-| Zforge `3693d00`, the D-85 test | `main` agent | failed, `Not hittable` ×3 (`IconPreviewUITests.swift:32`) |
-| Zforge `3693d00`, the D-85 test | fixed | passed; guard clean |
-| Zforge `3693d00`, offscreen UI-Full set (18 tests, 3 lanes) | fixed | 17/18; the failure is `testListColumnsReorderByDragging` (order `[modificationDate, kind, size]`), which fails the same way with the `main` agent |
+| Zforge `cdff0c4`, the D-85 test | `main` agent | failed, `Not hittable` ×3 (`IconPreviewUITests.swift:32`) |
+| Zforge `cdff0c4`, the D-85 test | fixed | passed; guard clean |
+| Zforge `cdff0c4`, offscreen UI-Full set (18 tests, 3 lanes) | fixed | 17/18; the failure is `testListColumnsReorderByDragging` (order `[modificationDate, kind, size]`), which fails the same way with the `main` agent |
 
 The Zforge full-set guard recorded 2 front changes and pointer/hardware events: Safari and Mail, the user's
 own activity during the run; 0 visible windows of the app, 0 synthetic events.

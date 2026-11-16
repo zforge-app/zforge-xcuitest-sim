@@ -1,15 +1,15 @@
 # Zforge stage 1 — arrows, ⌘± zoom, toolbar search (2026-10-31)
 
 Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display.
-Tool: zforge-xcuitest-sim at `929213b` plus the uncommitted changes listed under "Tool changes".
+Tool: zforge-xcuitest-sim at `9239d4b` plus the uncommitted changes listed under "Tool changes".
 Every real (screen-taking) run was announced immediately before it started and when it ended.
 
 ## Build
 
-- Zforge `7ea66ec470133c21025b53d7f64f6873c226a863`, working tree clean (checked with `git status`
+- Zforge `c127bcaa357e39fabdd7f0cdf2085b43f6aff200`, working tree clean (checked with `git status`
   before starting); same build as `Notes/zforge-real-vs-simulated-2026-10-31.md`
   (`~/Library/Caches/dev.xcuitestsim/cmp-zf/dd`; since 2026-11-01 its products are
-  `~/Library/Caches/dev.xcuitestsim/builds/zforge-7ea66ec/Products`, Finder extension removed, same
+  `~/Library/Caches/dev.xcuitestsim/builds/zforge-c127bca/Products`, Finder extension removed, same
   `Zforge.debug.dylib`). Run results: `.local/results/cache-2026-11-01/cmp-zf/results-s1/` (see
   `Notes/evidence-2026-11-01.md`). `Zforge.debug.dylib` SHA-256 `da557f4a8d41b160`
   in the real copy; the simulated copy has an identical `__text` section (weak agent load command and
@@ -42,7 +42,7 @@ Screen guard — real: 2–4 frontmost-app changes and 112–833 synthetic event
 
 The search test fails in the real mode on the unmodified build without any tool component
 (`s1-search-real-pure`) and with the observer (`s1-observe-real`): a pre-existing failure of the app or
-test at `7ea66ec` (⌘F shows the field but it never becomes first responder; no
+test at `c127bca` (⌘F shows the field but it never becomes first responder; no
 `makeFirstResponder:` call in either mode). It is reported, not investigated in Zforge, and not
 usable as a passing reference until fixed.
 

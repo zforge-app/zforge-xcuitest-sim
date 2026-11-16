@@ -1,6 +1,6 @@
 # Zforge stage 8 — in-app drags (2026-10-31)
 
-Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Zforge `7ea66ec`
+Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Zforge `c127bca`
 (clean), same build as the earlier stages (`Zforge.debug.dylib` `da557f4a8d41b160`). Zforge repository
 only read. Real runs announced before and after.
 
@@ -20,7 +20,7 @@ only read. Real runs announced before and after.
 | testArchiveSizeLimitSliderHoldsRoundValuesWhileDragging | **fail** 15.05 s | **fail** 17.05 s | both `SettingsUITests.swift:100` "1.03 GB" ≠ "1.06 GB" and `:101` | 164 = 164; one check reordered in the failure capture |
 | testListHeaderDividerResizesAndHeaderBodyReorders | not run (real-only) | fails `ZforgeUITests.swift:847` (reorder never happens), with an explicit "UNSUPPORTED: drag-and-drop session" agent log | — | — |
 
-The slider test fails in the real mode on the unmodified build: a pre-existing failure at `7ea66ec`,
+The slider test fails in the real mode on the unmodified build: a pre-existing failure at `c127bca`,
 reported for separate handling (not investigated in Zforge).
 
 | Regression | Real | Simulated |

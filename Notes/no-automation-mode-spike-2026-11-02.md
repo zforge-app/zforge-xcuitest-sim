@@ -130,12 +130,12 @@ by default). Without the switch nothing changes.
 
 | Run | Build | Result | Automation Mode (1 s samples) |
 |---|---|---|---|
-| `noam-16b` | `zforge-7fe52d8` | 15/16; the failure is the Columns File ▸ Open race below | 175 × disabled |
+| `noam-16b` | `zforge-888896d` | 15/16; the failure is the Columns File ▸ Open race below | 175 × disabled |
 | `fo-noam`, `fo-default` | Zforge worktree with the test synchronized | 3/3 and 3/3 | `fo-noam` disabled |
 | `noam-16c` | same worktree | **16/16**, guard clean (0 front changes, 0 windows, 0 synthetic events), 170 s in 3 lanes | **174 × disabled** |
 | `noam-drop` (negative control, `XCUISIM_APP_DROP_EVENTS=1`) | same | 2/2 failed as they must | — |
 
-Activity trees of `noam-16b` against the real reference on the same build (`adopt-real-7fe52d8`), ignoring
+Activity trees of `noam-16b` against the real reference on the same build (`adopt-real-888896d`), ignoring
 only the steps of XCTest's query path (`Setting up automation session`; `Requesting snapshot of
 accessibility hierarchy…`, `Find: …`): **8 identical**; 5 differ only by `Terminate io.libor.Zforge` at
 launch (lane versus serial order, accepted before) or real-only runtime warnings; one has an extra

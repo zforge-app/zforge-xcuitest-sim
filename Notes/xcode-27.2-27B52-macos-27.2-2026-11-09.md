@@ -84,12 +84,12 @@ Zforge offscreen set (18 tests: UI-Full minus `offscreen.realOnly`), 3 lanes, no
 | `affected-20261109-*` (before) | Zforge `main` | 0 of every set ("Running Background") | 1 visible Zforge window (no agent) |
 | `zf66-repro1` | `main`, fix 1 only | runner abort (fix 2 needed) | clean |
 | `zf66-full-1` | `main`, fixes 1–2 | 13/18 | clean (user's own Safari/Siri activity only) |
-| `zf66-base-519a085` | Zforge `519a085` (16/16 on 2026-11-02 under 27.1), fixes 1–2 | 16/18 (sheet, menu hover) | clean |
-| `zf66-base-519a085-fixed` | same, fixes 1–4 | **18/18** | 0 front changes, 0 windows, 0 synthetic, 0 hardware events |
-| `zf66-main-fixed` | Zforge `main` (`70e4382`), fixes 1–4 | 16/18 | same, clean |
+| `zf66-base-0f575ac` | Zforge `0f575ac` (16/16 on 2026-11-02 under 27.1), fixes 1–2 | 16/18 (sheet, menu hover) | clean |
+| `zf66-base-0f575ac-fixed` | same, fixes 1–4 | **18/18** | 0 front changes, 0 windows, 0 synthetic, 0 hardware events |
+| `zf66-main-fixed` | Zforge `main` (`74f4b77`), fixes 1–4 | 16/18 | same, clean |
 
 The two failures on `main` are in Zforge's Settings window, which changed after the last 27.1 run
-(ZF-62: panes became a SwiftUI `ScrollView` instead of a grouped `Form`); they pass on `519a085`
+(ZF-62: panes became a SwiftUI `ScrollView` instead of a grouped `Form`); they pass on `0f575ac`
 with the same tool. See the consumer's records for their analysis.
 
 Not re-validated in this round: the tool's own sample app and its negative controls

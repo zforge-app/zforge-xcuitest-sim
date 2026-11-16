@@ -1,7 +1,7 @@
 # Zforge stage 6 — pop-up button menus and relaunch (2026-10-31)
 
-Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Tool `02c5136`
-(unchanged during this stage). Zforge `7ea66ec` (clean), same build as the earlier stages
+Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Tool `45bfdc0`
+(unchanged during this stage). Zforge `c127bca` (clean), same build as the earlier stages
 (`Zforge.debug.dylib` `da557f4a8d41b160`). Zforge repository only read. Real runs announced before and after.
 
 ## Test and new capabilities

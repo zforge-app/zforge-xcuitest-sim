@@ -47,7 +47,7 @@ anyone to type).
 
 | Run | Build | Tests | Outcome | Key thief updates |
 |---|---|---|---|---|
-| `keyfocus-before` (old agent) | `zforge-7fe52d8` | folder selection menu Option alternate + compact toolbar menus, 1 lane | 2/2 passed | **11** in 36 s |
+| `keyfocus-before` (old agent) | `zforge-888896d` | folder selection menu Option alternate + compact toolbar menus, 1 lane | 2/2 passed | **11** in 36 s |
 | `keyfocus-after` (new agent) | same | same | 2/2 passed | **0** in 38 s; agent logged the requests it kept |
 | `keyfocus-16` (new agent) | same | the 16 simulable Zforge tests, 3 lanes | 16/16 passed, guard clean for the lanes | **0** in 230 s |
 

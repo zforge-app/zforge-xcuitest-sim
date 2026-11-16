@@ -1,6 +1,6 @@
 # Zforge stage 3 — window lifecycle (2026-10-31)
 
-Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Zforge `7ea66ec`
+Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Zforge `c127bca`
 (clean), same build as the earlier stages (`Zforge.debug.dylib` `da557f4a8d41b160`; simulated copy:
 same `__text`). Zforge repository only read. Real runs announced before and after.
 
@@ -37,7 +37,7 @@ Screen guard: real 2–4 frontmost changes, 202–306 synthetic events; simulate
   test each); failing-test trees differ from the real ones only in post-failure polling.
 - All validated Zforge tests pass with trees identical to their real references, except as follows.
 - `testCompactToolbarMenusOpenFromTheirToolbarButtons` failed when the validated tests ran together.
-  Cause: test-order dependency in Zforge `7ea66ec` — when it runs right after
+  Cause: test-order dependency in Zforge `c127bca` — when it runs right after
   `testBlankAreaUsesMoreMenuInEveryView`, the overflow menu lacks "Compress Selected"
   (`ZforgeUITests.swift:914`). Confirmed in the **real** mode with the same pair (fails the same way,
   identical trees 656 + 71 steps), so it is pre-existing, not a tool divergence; alone it passes in

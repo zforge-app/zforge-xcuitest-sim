@@ -1,7 +1,7 @@
 # Zforge stage 2 — toolbar menus and modifier-click selection (2026-10-31)
 
-Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Tool `2077368`
-(unchanged during this stage). Zforge `7ea66ec` (clean), same build as the earlier comparisons
+Environment: Xcode 27.1 (27A9275), macOS 27.0.1 (26A434), arm64, single display. Tool `54d2f91`
+(unchanged during this stage). Zforge `c127bca` (clean), same build as the earlier comparisons
 (`Zforge.debug.dylib` `da557f4a8d41b160`; simulated copy: same `__text`). Zforge repository only read.
 Real runs announced before and after.
 
