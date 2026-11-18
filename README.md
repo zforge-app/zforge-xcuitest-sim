@@ -60,3 +60,7 @@ Scripts/run-lanes.py --name <run> --results <dir> --watch <app> --watch <runner>
 Anything that leaves the app process cannot be simulated and stays in the real lane: Finder and other system apps, drag and drop through the window server, out-of-process open/save panels, permission dialogs. The interception relies on private Xcode protocols and can break with any Xcode release.
 
 It is generic for macOS apps built on AppKit (including SwiftUI). Zforge is the first consumer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
